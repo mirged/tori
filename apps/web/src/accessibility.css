@@ -1,0 +1,7 @@
+/* Accessibility helpers layered on top of the main theme. */
+@media (forced-colors: active) {
+  .play-tile, .player-tile, .edit-answer, .btn, .chip, .name-tile > span, .name-kick { border: 2px solid ButtonText; }
+  .player-tile.chosen, .edit-answer.correct .correct-toggle { outline: 4px solid Highlight; }
+}
+.player-tile:focus-visible, .play-tile:focus-visible { outline: 4px solid #fff; outline-offset: 3px; }
+.game-shell :focus-visible, .join-screen :focus-visible { outline-color: #ffd23f; }

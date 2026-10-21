@@ -1,0 +1,39 @@
+{
+  "name": "tori",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "engines": { "node": ">=24.0.0" },
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "node --watch --import tsx apps/server/src/index.ts",
+    "build": "tsc --noEmit && vite build",
+    "start": "node --import tsx apps/server/src/index.ts --production",
+    "test": "node --import tsx --test --test-isolation=none tests/*.test.ts",
+    "test:load": "node --import tsx scripts/load-test.ts",
+    "backup": "node --import tsx apps/server/src/maintenance.ts backup",
+    "restore": "node --import tsx apps/server/src/maintenance.ts restore",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "tsx": "^4.20.6",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "engine.io-client": "^6.6.7",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.0"
+  }
+}

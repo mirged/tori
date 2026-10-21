@@ -1,0 +1,165 @@
+import { useEffect, useRef, useState } from 'react';
+import { questionSchema, quizSchema, type Question, type Quiz } from '../../../packages/shared/src/protocol';
+import { Brand, Cover, Icon, Shape } from './icons';
+import { download, errorText, uid } from './lib';
+import { Modal, navigate } from './App';
+
+const typeNames: Record<Question['type'], string> = { single: 'Quiz', boolean: 'True or false', multiple: 'Multi-select' };
+const blank = (type: Question['type'] = 'single'): Question => ({ id: uid(), type, text: '', options: type === 'boolean' ? ['True', 'False'] : ['', '', '', ''], correct: [0], seconds: 20, explanation: '' });
+const issuesFor = (q: Question) => { const result = questionSchema.safeParse(q); return result.success ? [] : [...new Set(result.error.issues.map(i => i.message))]; };
+
+export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; onChange: (quiz: Quiz) => void; onHost: () => void; storageError: string }) {
+  const [index, setIndex] = useState(0); const [preview, setPreview] = useState(false); const [showCorrect, setShowCorrect] = useState(false); const [error, setError] = useState('');
+  const [settings, setSettings] = useState(!quiz.title); const [addMenu, setAddMenu] = useState(false); const [dragging, setDragging] = useState<number | null>(null);
+  const [undo, setUndo] = useState<{ question: Question; index: number } | null>(null); const [dropActive, setDropActive] = useState(false);
+  const imageRef = useRef<HTMLInputElement>(null); const revealRef = useRef<HTMLInputElement>(null); const textRef = useRef<HTMLTextAreaElement>(null);
+  const q = quiz.questions[index];
+  const update = (patch: Partial<Quiz>) => { onChange({ ...quiz, ...patch }); setError(''); };
+  const updateQuestion = (patch: Partial<Question>) => update({ questions: quiz.questions.map((q, i) => i === index ? { ...q, ...patch } : q) });
+  useEffect(() => { if (!undo) return; const timer = setTimeout(() => setUndo(null), 7000); return () => clearTimeout(timer); }, [undo]);
+  useEffect(() => { if (index >= quiz.questions.length && quiz.questions.length) setIndex(quiz.questions.length - 1); }, [index, quiz.questions.length]);
+  function add(type: Question['type'] = 'single') {
+    if (quiz.questions.length >= 50) return;
+    const questions = [...quiz.questions]; questions.splice(index + 1, 0, blank(type));
+    update({ questions }); setIndex(quiz.questions.length ? index + 1 : 0); setAddMenu(false);
+    requestAnimationFrame(() => textRef.current?.focus());
+  }
+  function move(from: number, to: number) {
+    if (to < 0 || to >= quiz.questions.length || from === to) return;
+    const questions = [...quiz.questions]; const [item] = questions.splice(from, 1); questions.splice(to, 0, item);
+    update({ questions }); setIndex(to);
+  }
+  function remove() {
+    setUndo({ question: q, index });
+    update({ questions: quiz.questions.filter((_, i) => i !== index) }); setIndex(Math.max(0, index - 1));
+  }
+  function restore() {
+    if (!undo) return;
+    const questions = [...quiz.questions]; questions.splice(undo.index, 0, undo.question);
+    update({ questions }); setIndex(undo.index); setUndo(null);
+  }
+  async function image(file?: File, field: 'image' | 'revealImage' = 'image') {
+    if (!file) return;
+    try {
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) || file.size > 1_000_000) throw new Error('Choose a PNG, JPEG, WebP, or GIF image under 1 MB.');
+      const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('The image could not be read.')); reader.readAsDataURL(file); });
+      const result = questionSchema.shape.image.safeParse(data);
+      if (!result.success) throw new Error('That image format could not be verified. Try another PNG, JPEG, WebP, or GIF.');
+      updateQuestion({ [field]: data });
+    } catch (error) { setError(errorText(error)); }
+    if (imageRef.current) imageRef.current.value = '';
+    if (revealRef.current) revealRef.current.value = '';
+  }
+  function host() {
+    const result = quizSchema.safeParse(quiz);
+    if (!result.success) {
+      const issue = result.error.issues[0]; const qIndex = issue.path[1];
+      if (typeof qIndex === 'number') setIndex(qIndex); else if (issue.path[0] !== 'questions') setSettings(true);
+      setError(issue.message); return;
+    }
+    onHost();
+  }
+  function setType(type: Question['type']) {
+    updateQuestion({ type, ...(type === 'boolean' ? { options: ['True', 'False'], correct: [q.correct[0] && q.correct[0] < 2 ? q.correct[0] : 0] } : { options: q.type === 'boolean' ? ['', '', '', ''] : q.options, correct: type === 'multiple' ? q.correct : q.correct.slice(0, 1) }) });
+  }
+  const toggleCorrect = (i: number) => updateQuestion({ correct: q.type === 'multiple' ? q.correct.includes(i) ? q.correct.filter(n => n !== i) : [...q.correct, i] : [i] });
+  const issues = q ? issuesFor(q) : [];
+  return <div className="editor-shell">
+    <header className="editor-topbar">
+      <a href="/home" className="brand-link" onClick={e => { e.preventDefault(); navigate('/home'); }} aria-label="Tori home"><Brand /></a>
+      <button className="title-button" onClick={() => setSettings(true)}><span>{quiz.title || 'Enter quiz title…'}</span><span className="settings-pill"><Icon name="settings" size={15} />Settings</span></button>
+      <span className={`save-status ${storageError ? 'unsaved' : ''}`} role="status"><Icon name={storageError ? 'warning' : 'check'} size={15} /><span className="hide-mobile">{storageError ? 'Backup needed' : 'Saved'}</span></span>
+      <div className="editor-top-actions">
+        <button className="btn ghost small hide-mobile" onClick={() => { setShowCorrect(false); setPreview(true); }} disabled={!q}><Icon name="eye" size={17} />Preview</button>
+        <button className="btn ghost small hide-mobile" onClick={() => download(JSON.stringify(quiz, null, 2), `${quiz.title || 'tori-draft'}.json`)}><Icon name="download" size={17} />Export</button>
+        <button className="btn outline small" onClick={() => navigate('/home')}>Exit</button>
+        <button className="btn green small" onClick={host}><Icon name="play" size={14} />Host</button>
+      </div>
+    </header>
+    {(storageError || error) && <div className="editor-alerts">{storageError && <p className="alert" role="alert"><Icon name="warning" size={17} />{storageError}</p>}{error && <p className="alert" role="alert"><Icon name="warning" size={17} />{error}</p>}</div>}
+    <div className="editor-layout">
+      <aside className="slide-rail" aria-label="Questions">
+        <ol>{quiz.questions.map((question, i) => {
+          const bad = issuesFor(question).length > 0;
+          return <li key={question.id} draggable onDragStart={() => setDragging(i)} onDragEnd={() => setDragging(null)} onDragOver={e => e.preventDefault()} onDrop={() => { if (dragging !== null) move(dragging, i); setDragging(null); }} className={dragging === i ? 'dragging' : ''}>
+            <span className="slide-num">{i + 1}<small>{typeNames[question.type]}</small></span>
+            <button className={`slide-thumb ${i === index ? 'active' : ''}`} onClick={() => { setIndex(i); setError(''); }} aria-current={i === index ? 'step' : undefined} aria-label={`Question ${i + 1}: ${question.text || 'empty'}${bad ? ' (needs attention)' : ''}`}>
+              <span className="thumb-text">{question.text || 'Question'}</span>
+              <span className="thumb-time">{question.seconds}</span>
+              {question.image ? <img className="thumb-image" src={question.image} alt="" /> : <span className="thumb-image placeholder"><Icon name="image" size={14} /></span>}
+              <span className="thumb-answers">{question.options.map((_, n) => <span key={n} className={`ans-${n} ${question.correct.includes(n) ? 'ok' : ''}`} />)}</span>
+              {bad && <span className="thumb-warning" title="Needs attention"><Icon name="warning" size={13} /></span>}
+            </button>
+          </li>;
+        })}</ol>
+        <div className="add-wrap">
+          <button className="btn blue full" onClick={() => setAddMenu(!addMenu)} aria-expanded={addMenu} disabled={quiz.questions.length >= 50}><Icon name="plus" size={17} />Add question</button>
+          {addMenu && <div className="add-menu" role="menu">{(['single', 'boolean', 'multiple'] as const).map(type => <button role="menuitem" key={type} onClick={() => add(type)}><span className={`type-icon type-${type}`}>{type === 'boolean' ? <><Shape index={0} size={10} /><Shape index={1} size={10} /></> : <><Shape index={0} size={9} /><Shape index={1} size={9} /><Shape index={2} size={9} /><Shape index={3} size={9} /></>}</span>{typeNames[type]}</button>)}</div>}
+          <small className="rail-count">{quiz.questions.length}/50 questions</small>
+        </div>
+      </aside>
+
+      <main className="canvas">
+        {q ? <>
+          <label className="sr-only" htmlFor="question-text">Question text</label>
+          <textarea id="question-text" ref={textRef} className="canvas-question" rows={2} maxLength={300} placeholder="Start typing your question" value={q.text} onChange={e => updateQuestion({ text: e.target.value })} />
+          <div className={`canvas-media ${dropActive ? 'drop' : ''}`} onDragOver={e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDropActive(true); } }} onDragLeave={() => setDropActive(false)} onDrop={e => { if (!e.dataTransfer.files.length) return; e.preventDefault(); setDropActive(false); void image(e.dataTransfer.files[0]); }}>
+            {q.image ? <div className="media-image"><img src={q.image} alt="Question illustration" /><div className="media-actions"><button className="btn white small" onClick={() => imageRef.current?.click()}><Icon name="image" size={15} />Replace</button><button className="btn white small" onClick={() => updateQuestion({ image: undefined })}><Icon name="trash" size={15} />Remove</button></div></div>
+              : <button className="media-empty" onClick={() => imageRef.current?.click()}><span className="media-plus"><Icon name="plus" size={30} /></span><strong>Insert an image</strong><small>Drop a file here · PNG, JPEG, WebP, GIF up to 1 MB</small></button>}
+            <input type="file" ref={imageRef} hidden accept="image/png,image/jpeg,image/webp,image/gif" onChange={e => image(e.target.files?.[0])} />
+          </div>
+          <div className="canvas-answers">{q.options.map((option, i) => {
+            const correct = q.correct.includes(i);
+            return <div className={`edit-answer ans-${i} ${option ? 'filled' : ''} ${correct ? 'correct' : ''}`} key={`${q.id}-${i}`}>
+              <span className="edit-shape"><Shape index={i} size={22} /></span>
+              <label className="sr-only" htmlFor={`answer-${i}`}>Answer {i + 1}</label>
+              <input id={`answer-${i}`} maxLength={160} value={option} readOnly={q.type === 'boolean'} placeholder={`Add answer ${i + 1}${i >= 2 ? ' (optional)' : ''}`} onChange={e => updateQuestion({ options: q.options.map((o, n) => n === i ? e.target.value : o) })} />
+              {q.options.length > 2 && q.type !== 'boolean' && <button className="answer-remove" aria-label={`Remove answer ${i + 1}`} onClick={() => updateQuestion({ options: q.options.filter((_, n) => n !== i), correct: q.correct.filter(n => n !== i).map(n => n > i ? n - 1 : n) })}><Icon name="close" size={14} /></button>}
+              <button className={`correct-toggle ${q.type === 'multiple' ? 'square' : ''}`} role={q.type === 'multiple' ? 'checkbox' : 'radio'} aria-checked={correct} aria-label={`Answer ${i + 1} is correct`} onClick={() => toggleCorrect(i)}>{correct && <Icon name="check" size={18} />}</button>
+            </div>;
+          })}</div>
+          {q.type !== 'boolean' && q.options.length < 6 && <button className="btn white small add-answer" onClick={() => updateQuestion({ options: [...q.options, ''] })}><Icon name="plus" size={15} />Add more answers</button>}
+          <label className="canvas-explanation"><span><Icon name="spark" size={16} />Explanation <small>shown after the reveal · optional</small></span><textarea rows={2} maxLength={1000} placeholder="Why is this the answer? Share a fun fact." value={q.explanation} onChange={e => updateQuestion({ explanation: e.target.value })} />
+            {q.revealImage ? <div className="reveal-image-edit"><img src={q.revealImage} alt="Reveal image" /><button className="btn white small" onClick={e => { e.preventDefault(); updateQuestion({ revealImage: undefined }); }}><Icon name="trash" size={15} />Remove</button></div>
+              : <button className="btn ghost small reveal-add" onClick={e => { e.preventDefault(); revealRef.current?.click(); }}><Icon name="image" size={16} />Add a reveal image — a meme or GIF shown with the answer</button>}
+            <input type="file" ref={revealRef} hidden accept="image/png,image/jpeg,image/webp,image/gif" onChange={e => image(e.target.files?.[0], 'revealImage')} /></label>
+        </> : <div className="canvas-empty"><Icon name="spark" size={40} /><h2>Every good quiz starts somewhere.</h2><button className="btn blue" onClick={() => add()}>Add your first question</button></div>}
+      </main>
+
+      {q && <aside className="inspector" aria-label="Question settings">
+        <div className="inspector-group"><h3><Icon name="help" size={16} />Question type</h3>
+          <div className="type-picker" role="radiogroup" aria-label="Question type">{(['single', 'boolean', 'multiple'] as const).map(type => <button key={type} role="radio" aria-checked={q.type === type} className={q.type === type ? 'active' : ''} onClick={() => setType(type)}>{typeNames[type]}</button>)}</div>
+        </div>
+        <div className="inspector-group"><h3><Icon name="clock" size={16} />Time limit</h3>
+          <div className="time-picker" role="radiogroup" aria-label="Time limit">{[...new Set([5, 10, 20, 30, 60, 90, 120, 240, q.seconds])].sort((a, b) => a - b).map(s => <button key={s} role="radio" aria-checked={q.seconds === s} className={q.seconds === s ? 'active' : ''} onClick={() => updateQuestion({ seconds: s })}>{s < 60 ? `${s}s` : `${s / 60}m`}</button>)}</div>
+        </div>
+        {issues.length > 0 && <div className="inspector-group issues"><h3><Icon name="warning" size={16} />Needs attention</h3><ul>{issues.map(m => <li key={m}>{m}</li>)}</ul></div>}
+        <div className="inspector-actions">
+          <button className="btn ghost small" disabled={index === 0} onClick={() => move(index, index - 1)}><Icon name="up" size={16} />Move up</button>
+          <button className="btn ghost small" disabled={index === quiz.questions.length - 1} onClick={() => move(index, index + 1)}><Icon name="down" size={16} />Move down</button>
+          <button className="btn ghost small" disabled={quiz.questions.length >= 50} onClick={() => { const questions = [...quiz.questions]; questions.splice(index + 1, 0, { ...structuredClone(q), id: uid() }); update({ questions }); setIndex(index + 1); }}><Icon name="copy" size={16} />Duplicate</button>
+          <button className="btn ghost small danger-text" onClick={remove}><Icon name="trash" size={16} />Delete</button>
+        </div>
+        <button className="btn outline full small show-mobile" onClick={() => { setShowCorrect(false); setPreview(true); }}><Icon name="eye" size={16} />Preview question</button>
+      </aside>}
+    </div>
+    {undo && <div className="toast" role="status">Question deleted<button className="toast-action" onClick={restore}>Undo</button></div>}
+    {settings && <Modal title="Quiz settings" onClose={() => setSettings(false)}>
+      <div className="settings-form">
+        <label>Title<input placeholder="Give your quiz a catchy name" maxLength={100} value={quiz.title} onChange={e => update({ title: e.target.value })} /></label>
+        <label>Description <span className="optional">optional</span><textarea rows={2} placeholder="A little introduction for your players" maxLength={300} value={quiz.description} onChange={e => update({ description: e.target.value })} /></label>
+        <label>Category<select value={quiz.category} onChange={e => update({ category: e.target.value })}>{[...new Set(['General knowledge', 'Nature', 'Science & space', 'Arts & culture', 'History', 'Just for fun', quiz.category])].map(c => <option key={c}>{c}</option>)}</select></label>
+        <fieldset className="cover-field"><legend>Cover color</legend><div className="cover-picker">{(['green', 'peach', 'lilac', 'blue'] as const).map(color => <button key={color} className={`cover-swatch ${quiz.cover === color ? 'active' : ''}`} aria-label={`${color} cover`} aria-pressed={quiz.cover === color} onClick={() => update({ cover: color })}><Cover kind={color} small /></button>)}</div></fieldset>
+      </div>
+      <button className="btn blue full" onClick={() => setSettings(false)}>Done</button>
+    </Modal>}
+    {preview && q && <Modal title={`Preview · Question ${index + 1}`} onClose={() => setPreview(false)} wide>
+      <div className="question-preview">
+        <div className="preview-stage"><h2>{q.text || 'Your question will appear here.'}</h2>{q.image && <img className="preview-image" src={q.image} alt="Question illustration" />}<span className="preview-timer">{q.seconds}</span></div>
+        <div className="preview-answers">{q.options.map((o, i) => <div key={i} className={`play-tile ans-${i} ${showCorrect ? q.correct.includes(i) ? 'right' : 'wrong' : ''}`}><Shape index={i} size={26} /><span>{o || `Answer ${i + 1}`}</span>{showCorrect && q.correct.includes(i) && <Icon name="check" size={24} />}</div>)}</div>
+        {showCorrect && <p className="explanation-box">{q.explanation || 'Add an explanation to share the story behind this answer.'}</p>}{showCorrect && q.revealImage && <img className="preview-image" src={q.revealImage} alt="Reveal image" />}
+        <button className="btn blue full" onClick={() => setShowCorrect(!showCorrect)}>{showCorrect ? 'Hide correct answer' : 'Reveal correct answer'}</button>
+      </div>
+    </Modal>}
+  </div>;
+}

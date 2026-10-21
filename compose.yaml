@@ -1,0 +1,22 @@
+services:
+  tori:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      DATABASE_PATH: /app/data/tori.sqlite
+      RETENTION_HOURS: "24"
+      MAX_ROOMS: "100"
+      MAX_PLAYERS: "300"
+    volumes:
+      - tori-data:/app/data
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  tori-data:

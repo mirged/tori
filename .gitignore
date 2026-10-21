@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+coverage/
+*.sqlite*
+.env
+test-results/
+test-results/
+*.log
