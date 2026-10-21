@@ -1,0 +1,6 @@
+# Caddy gets and renews a free HTTPS certificate for $DOMAIN automatically.
+# WebSockets (live game updates) pass through without extra configuration.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy tori:3000
+}

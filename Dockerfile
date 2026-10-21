@@ -16,7 +16,7 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/apps ./apps
 COPY --from=build --chown=node:node /app/packages ./packages
-COPY --from=build --chown=node:node /app/audio ./audio
+COPY --from=build --chown=node:node /app/audio/*.mp3 ./audio/
 COPY --from=build --chown=node:node /app/LICENSE ./LICENSE
 COPY --from=build --chown=node:node /app/README.md ./README.md
 RUN mkdir -p /app/data && chown node:node /app/data

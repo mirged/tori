@@ -1,14 +1,20 @@
+# Plain HTTP on port 3000 (classroom Wi-Fi or a server behind your own proxy):
+#   docker compose up -d --build
+# Public server with automatic HTTPS (needs a domain pointing at the server):
+#   echo "DOMAIN=quiz.example.com" > .env && docker compose --profile https up -d --build
 services:
   tori:
     build: .
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:3000"
     environment:
       PORT: "3000"
       DATABASE_PATH: /app/data/tori.sqlite
-      RETENTION_HOURS: "24"
-      MAX_ROOMS: "100"
-      MAX_PLAYERS: "300"
+      RETENTION_HOURS: "${RETENTION_HOURS:-24}"
+      MAX_ROOMS: "${MAX_ROOMS:-100}"
+      MAX_PLAYERS: "${MAX_PLAYERS:-300}"
+      # The address players type or scan. Set automatically from DOMAIN with HTTPS.
+      PUBLIC_URL: "${PUBLIC_URL:-${DOMAIN:+https://${DOMAIN}}}"
     volumes:
       - tori-data:/app/data
     restart: unless-stopped
@@ -18,5 +24,23 @@ services:
     cap_drop:
       - ALL
 
+  caddy:
+    image: caddy:2.8-alpine
+    profiles: ["https"]
+    depends_on: [tori]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: "${DOMAIN:-localhost}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
 volumes:
   tori-data:
+  caddy-data:
+  caddy-config:

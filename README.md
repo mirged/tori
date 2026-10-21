@@ -1,143 +1,133 @@
-# Tori
+# Tori!
 
-**Good questions. Great company.** A free, open-source live quiz app for classrooms,
-clubs, and game nights. No accounts, ads, subscriptions, or third-party trackers.
+**A free, open-source live quiz game** for classrooms, clubs, and game nights —
+in the style of the classic colourful-shapes quiz show. No accounts, ads,
+subscriptions, or trackers.
 
-Tori includes a quiz library, an autosaving browser editor, three question types,
-images, JSON import/export, PIN and QR joining, host moderation, projector view,
-accuracy and speed scoring, cooperative results, individual review, and CSV
-exports. Private credentials reconnect players and hosts after refresh. SQLite
-retains accepted answers and room transitions across server restarts.
+- Six question types: quiz, true/false, multi-select, poll, type-the-answer, and
+  puzzle (put in order), with images, GIFs, reveal memes, and double/no points.
+- Big-screen host view with music, a get-ready screen, live answer bars, a
+  scoreboard, and an animated podium. Phones show big coloured buttons.
+- Team mode, answer streaks, “120 points behind Ana” rival subtitles, auto-reveal
+  when everyone has answered, shuffled answers, shapes-only phones.
+- Nickname filter, host kick + lobby lock, reconnect after refresh or lost Wi-Fi.
+- Quiz editor with drag-and-drop slides, CSV/spreadsheet import, JSON backups.
 
-This is a working first-release prototype, not a certified public hosting service.
-The release work and verification limits are tracked in [docs/STATUS.md](docs/STATUS.md).
+## Option A — play on your school or home Wi-Fi (from your laptop)
 
-## Run with Docker
-
-```sh
-docker compose up --build -d
-```
-
-Open **http://localhost:3000**. For phones on the same Wi-Fi, open
-`http://YOUR-COMPUTER-LAN-IP:3000` on the host computer first, then share that
-page’s join link or QR code. A QR code created on `localhost` points at the
-player’s own device; it is unsuitable for other devices. No external service is
-needed during play. Permit TCP port 3000 through your local firewall if needed.
-
-One application service and one persistent volume (`tori-data`). Container data
-survives rebuilds. `docker compose down -v` deletes that volume.
-
-## Develop locally
-
-Install **Node.js 24 LTS** and npm, then:
+Needs **Node.js 24** ([download](https://nodejs.org/)).
 
 ```sh
 npm ci
-npm run dev
+npm run build
+npm start
 ```
 
-Open **http://localhost:3000**. The server serves Vite and Socket.IO on the same
-port; the frontend updates as you edit. Server source changes restart the process.
-The local database is `data/tori.sqlite`.
+Open **http://localhost:3000/home** on your laptop, pick a quiz, and press
+**Host**. The lobby automatically shows your computer’s network address (for
+example `http://192.168.1.20:3000/join`) and a QR code — phones on the same
+Wi-Fi scan it and join. If phones can’t connect, allow TCP port 3000 through your
+computer’s firewall. Some school networks block device-to-device traffic; use
+option B there.
+
+## Option B — deploy to a server (works on any network, including mobile data)
+
+Any small Linux VPS (1 vCPU / 1 GB RAM is plenty for a class) with
+[Docker](https://docs.docker.com/engine/install/) installed:
 
 ```sh
-npm test        # scoring, schemas, rooms, recovery, backups, HTTP and live sockets
-npm run build  # strict TypeScript check and production frontend build
-npm start      # serve the production build at port 3000
-npm run test:load
+git clone <your repo> tori && cd tori
+cp .env.example .env
+# With a domain (recommended): point its DNS A record at the server, then
+echo "DOMAIN=quiz.example.com" >> .env
+sh scripts/deploy.sh
 ```
 
-`npm test` explicitly skips its live network test if the runtime prohibits local
-socket binding. Such a skip does not verify actual network transport or browser
-behavior. The complete Socket.IO flow also runs over in-memory HTTP polling,
-including reconnect and server restart; API tests use real Node HTTP objects over
-in-memory streams. Persistence tests use real SQLite databases.
+- With `DOMAIN` set, Caddy gets a free HTTPS certificate automatically and Tori is
+  live at `https://quiz.example.com`. Open ports 80 and 443.
+- Without a domain, Tori runs on `http://SERVER-IP:3000`. Open port 3000, and set
+  `PUBLIC_URL=http://SERVER-IP:3000` in `.env` so the QR code shows that address.
+- Update later with `git pull && sh scripts/deploy.sh`. Game data lives in the
+  `tori-data` Docker volume and survives rebuilds (`docker compose down -v` deletes it).
+- Logs: `docker compose logs -f tori`. Health: `/api/health`.
 
-The checked-in lockfile pins the resolved versions. This implementation uses
-React 19, Vite 8, Express 5, Socket.IO 4, Zod 4, and Node’s built-in SQLite module.
-The supported production runtime is Node 24. The system Node 20 found in the
-implementation workspace does not support `node:sqlite`; development checks were
-run with the available Node 24 runtime.
+Students open the site and land straight on the PIN screen; you go to `/home`
+(or tap **Host or create a quiz** on the join screen).
 
-## A game in a minute
+## Before your class — 2-minute checklist
 
-1. Open a starter quiz, or choose **Create a quiz**. Select the correct options;
-   multiple-answer questions can have more than one. Add an explanation and time
-   limit. Preview a question before hosting.
-2. Choose **Host**. Accuracy scoring is the default. Optionally approve nicknames
-   and show the leaderboard. The complete [scoring rules](docs/SCORING.md) are also
-   available in the app.
-3. Players enter the six-digit PIN at `/join`, or scan the QR code. Leave the
-   nickname blank for a generated one. No email or account is needed.
-4. Start, pause, reveal, and advance together. A projector tab is available from
-   the lobby. Player screens include the full question and all answer text.
-5. Finish, download CSV results, review missed questions, or replay into a fresh
-   room. **Delete game data** removes the server’s session immediately.
+1. Host a test game and join from your own phone on the class network.
+2. Turn the volume up and click once on the host screen (browsers need one click
+   before they play music). Fullscreen with **F**.
+3. Keep the host tab visible; **Space** advances, the ✕ in the corner ends the game.
+4. If someone joins with a bad name: click their name to kick, then lock the lobby.
+5. Export your quiz as JSON (Export button in the editor) as a backup.
 
-An answer is final when accepted. A timed-out submission can retry the same
-request safely. Refreshing the host or player screen reconnects with its private
-browser credential; the PIN alone never grants host control. A restart consumes
-time for a running question; an expired deadline reveals on recovery. Paused
-questions stay paused.
+## Making quizzes
+
+- **Editor:** `/home` → **Create**. Pick a type in the right panel, set time and
+  points, drag slides to reorder. Photos are shrunk automatically; GIFs up to 1 MB.
+- **Spreadsheet:** download the CSV template from the home page, fill it in
+  Excel/Google Sheets, save as CSV, and **Import**. Columns: Question, Type
+  (quiz, true/false, multi, poll, type answer, order), Answer 1–6, Correct
+  (answer numbers like `2` or `1,3`), Time (seconds), Points (standard, double,
+  none), Explanation. For type-answer, list accepted answers; for order, list
+  items in the correct order.
+- **Backups:** quizzes live in this browser (IndexedDB). Export JSON to move them
+  between computers or keep a safe copy.
+
+## Develop
+
+```sh
+npm ci
+npm run dev          # http://localhost:3000, hot reload
+npm test             # scoring, rules, persistence, HTTP and live sockets
+npm run test:e2e     # real browser: host + 3 phones play every question type
+npm run test:load    # 100 players at once + 10 rooms × 30, with images
+npm run build        # strict TypeScript check and production build
+```
+
+`test:e2e` uses your installed Chrome (set `CHROME_PATH` if it isn’t found).
+Set `E2E_SHOTS=some/folder` to save screenshots of every screen.
 
 ## Data ownership and privacy
 
-- Quiz drafts and private game credentials live in browser local storage. Drafts
-  are saved as you edit. If saving fails, an explicit warning requests a backup.
-  Clearing browser data removes drafts and access credentials. Export JSON first.
-- JSON backups preserve images, types, options, explanations, and time limits.
-  Drafts can be imported unfinished; hosting requires a valid, complete quiz.
-  See [docs/FORMAT.md](docs/FORMAT.md) for the format and limits.
-- Hosting stores a private snapshot of that quiz, player names, hashed
-  credentials, accepted answers, and scores in SQLite. Results expire **24 hours
-  after creation** by default, regardless of continued activity. No student email,
-  analytics identifiers, or third-party connections are required.
-- Expiry and deletion remove active SQLite rows. Backups and deleted disk pages
-  can retain prior data; SQLite deletion is not forensic secure erasure. Give
-  database volumes and backups appropriate filesystem access and retention.
-- Projector access is public to anyone with the room PIN. It shows the public
-  game and nicknames. Correct answers and explanations appear only after reveal.
+- Quiz drafts live in the browser (IndexedDB); private game credentials live in
+  local storage. Clearing browser data removes them — export JSON first.
+- Hosting stores the quiz, player nicknames, hashed credentials, answers and
+  scores in SQLite. Rooms expire **24 hours after creation** by default, or
+  immediately with **Delete game data**. No email, analytics or third parties.
+- Question images are only served once their question opens; reveal images,
+  correct answers, typed-answer solutions and puzzle orders stay on the server
+  until the reveal.
+- The projector view is public to anyone with the PIN and shows nicknames.
 
-## Instance configuration
+## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP and Socket.IO port |
 | `HOST` | `0.0.0.0` | Listen address |
+| `PUBLIC_URL` | unset | Join address shown in the lobby/QR (auto from `DOMAIN` in Docker) |
 | `DATABASE_PATH` | `data/tori.sqlite` | Persistent SQLite file |
 | `RETENTION_HOURS` | `24` | Absolute room lifetime |
-| `MAX_ROOMS` | `100` | Admission limit, **not measured capacity** |
-| `MAX_PLAYERS` | `300` | Players per room, **not measured capacity** |
+| `MAX_ROOMS` | `100` | Room admission limit |
+| `MAX_PLAYERS` | `300` | Players per room |
 | `TRUST_PROXY_HOPS` | unset | Set only for a known proxy chain |
 
-Only positive integers are accepted for limits. `/api/health` reports configured
-limits and explicitly marks them unmeasured. Rate limits are transparent: 1,200
-API requests/IP/minute, 15 room creations/IP/minute, 600 joins/IP/minute, 1,200
-socket connection/auth attempts/IP/minute, and 120 commands/socket/minute. A room
-permits at most three times its player limit in historical join records. These
-are prototype abuse controls; tune and review them before public exposure.
-
-For public hosting, place Tori behind HTTPS with WebSocket support. Forward the
-original Host header and set proxy trust only for the actual trusted hop count.
-Use a single process with one SQLite volume; multiple application replicas do
-not coordinate room ownership. Expose only the application port and keep backups
-private. See [docs/OPERATIONS.md](docs/OPERATIONS.md) for backup, restore, and load
-verification.
+Rate limits: 1,200 API requests/IP/minute, 15 room creations/IP/minute, 600
+joins/IP/minute, 1,200 socket connections/IP/minute, 120 commands/socket/minute.
+Run a single process with one SQLite volume; replicas do not share rooms. See
+[docs/OPERATIONS.md](docs/OPERATIONS.md) for backup and restore, and
+[docs/SCORING.md](docs/SCORING.md) for the scoring rules.
 
 ## Accessibility
 
-Answers carry text, distinct shapes, and color. All controls are native keyboard
-controls, player answers support keys 1–6 and Enter, and connected/accepted states
-are announced. Sound is off by default and optional; reduced motion follows the
-OS and can also be selected with the leaf control. Per-question time limits and
-host pause controls help pace play. Automated checks are not a substitute for
-the pending real-device and assistive-technology review.
+Answers carry shapes as well as colours, controls are keyboard-accessible
+(players: keys 1–6 and Enter; host: Space and F), reduced motion is available in
+the game toolbar and follows the OS setting, and music, effects and volume are
+adjustable separately.
 
 ## License
 
-AGPL-3.0-only, see [LICENSE](LICENSE). Application features are free. Public hosting
-still has costs and finite capacity. This prototype does not include a donation
-payment integration or advertise certified participant capacity.
-
-Runtime references: [Node releases](https://nodejs.org/en/about/previous-releases),
-[Vite setup](https://vite.dev/guide/), [Socket.IO documentation](https://socket.io/docs/v4/).
+AGPL-3.0-only, see [LICENSE](LICENSE).

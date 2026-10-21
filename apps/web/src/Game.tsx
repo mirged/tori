@@ -229,7 +229,7 @@ export function Game({ pin, role }: { pin: string; role: Role }) {
           <label className="sound-row"><span>Music</span><input type="checkbox" role="switch" className="switch" checked={musicOn} onChange={e => { void unlockAudio(); setMusicOn(e.target.checked); }} /></label>
           <label className="sound-row"><span>Sound effects</span><input type="checkbox" role="switch" className="switch" checked={sfxOn} onChange={e => { void unlockAudio(); setSfxOn(e.target.checked); }} /></label>
           <label className="sound-row volume"><span>Volume <small>{Math.round(volume * 100)}%</small></span><input type="range" min={0} max={1} step={.05} value={volume} onChange={e => setVolume(Number(e.target.value))} /></label>
-          <button className="btn white small full" onClick={() => setSoundMenu(false)}>Done</button>
+          <button className="btn blue small full" onClick={() => setSoundMenu(false)}>Done</button>
         </div>}
       </div>}
     {isScreen && <button className="tool-btn" onClick={toggleFullscreen} aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} title="Fullscreen (F)"><Icon name={fullscreen ? 'shrink' : 'expand'} size={19} /></button>}

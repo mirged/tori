@@ -41,7 +41,7 @@ export async function createTori(options: ServerOptions = {}) {
   });
   app.use((req, res, next) => {
     res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()' });
-    if (options.production) res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (options.production) res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     if (req.path.startsWith('/api/')) {
       res.set('Cache-Control', 'no-store');
       if (!sameOrigin(req.headers.origin, req.headers.host)) return res.status(403).json({ error: 'Requests must come from this instance.' });

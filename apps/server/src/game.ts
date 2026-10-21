@@ -98,7 +98,8 @@ export class Games {
       if (hash(credentials.token) !== room.hostHash) return fail('This host credential is not valid.');
       return { room, role: 'host' };
     }
-    const player = room.players.find(p => p.tokenHash === hash(credentials.token!));
+    const tokenHash = hash(credentials.token);
+    const player = room.players.find(p => p.tokenHash === tokenHash);
     if (!player) return fail('Your player session is no longer available.');
     if (player.removed) return fail('You were removed from this game by the host. This session is no longer available.');
     return { room, role: 'player', player };
@@ -229,8 +230,11 @@ export class Games {
   private mediaUrl(room: Room, question: Question, kind: 'image' | 'reveal') {
     return `/api/rooms/${room.pin}/media/${encodeURIComponent(question.id)}/${kind}?v=${room.mediaKey || room.hostHash.slice(-8)}`;
   }
-  snapshot(credentials: Credentials): Snapshot {
-    const { room, role, player } = this.authorize(credentials);
+  // Everything every viewer shares is computed once per room change, then reused
+  // for each connected device. A burst of answers otherwise rebuilds the whole
+  // scoreboard once per device per answer.
+  private cache = new WeakMap<Room, { seq: number; leaderboard: boolean; value: ReturnType<Games['shared']> }>();
+  private shared(room: Room) {
     const options = optionsOf(room);
     const active = room.players.filter(p => !p.removed && p.approved);
     const revealed = room.phase !== 'lobby' && room.phase !== 'question';
@@ -239,63 +243,81 @@ export class Games {
     // During a question, current points are private even if an answer was correct.
     const totals = new Map(active.map(p => [p.id, completed.reduce((sum, q) => sum + (p.answers[q.id]?.points || 0), 0)]));
     const sorted = [...active].sort((a, b) => totals.get(b.id)! - totals.get(a.id)! || a.name.localeCompare(b.name));
-    const visibleScores = (p: Player) => room.leaderboard || role === 'host' || p.id === player?.id;
-    const publicPlayer = (p: Player): PublicPlayer => ({
-      id: p.id, name: p.name, approved: p.approved, team: p.team,
-      score: visibleScores(p) ? totals.get(p.id) || 0 : 0,
-      rank: visibleScores(p) ? 1 + sorted.filter(other => totals.get(other.id)! > (totals.get(p.id) || 0)).length : 0,
-    });
+    const ranks = new Map<string, number>(); const positions = new Map<string, number>();
+    sorted.forEach((p, i) => { positions.set(p.id, i); ranks.set(p.id, i && totals.get(sorted[i - 1].id) === totals.get(p.id) ? ranks.get(sorted[i - 1].id)! : i + 1); });
+    const visible = (p: Player): PublicPlayer => ({ id: p.id, name: p.name, approved: p.approved, team: p.team, score: totals.get(p.id) || 0, rank: ranks.get(p.id) || 1 + sorted.length });
+    const hidden = (p: Player): PublicPlayer => ({ id: p.id, name: p.name, approved: p.approved, team: p.team, score: 0, rank: 0 });
     const question = room.quiz.questions[room.index];
-    const current = player && question ? player.answers[question.id] : undefined;
     const accuracy = active.reduce((sum, p) => sum + graded.reduce((n, q) => n + (p.answers[q.id]?.credit || 0), 0), 0);
     const denominator = active.length * graded.length;
+    let teams: TeamStanding[] | undefined;
+    if (options.teams && room.index >= 0) {
+      // Team score is the members' average, so uneven teams stay fair.
+      teams = teamNames.map((name, id) => {
+        const members = active.filter(p => p.team === id);
+        return { id, name, members: members.length, score: members.length ? Math.round(members.reduce((n, p) => n + totals.get(p.id)!, 0) / members.length) : 0, rank: 0 };
+      }).filter(t => t.members > 0).sort((a, b) => b.score - a.score);
+      teams.forEach(t => { t.rank = 1 + teams!.filter(o => o.score > t.score).length; });
+    }
+    let publicQuestion: Snapshot['question']; let distribution: number[] | undefined;
+    if (question) {
+      const { correct, explanation, revealImage, image, ...plain } = question;
+      const shown = { ...plain, ...(image ? { image: this.mediaUrl(room, question, 'image') } : {}) };
+      if (revealed) {
+        publicQuestion = { ...shown, correct, explanation, ...(revealImage ? { revealImage: this.mediaUrl(room, question, 'reveal') } : {}) };
+        const answers = active.map(p => p.answers[question.id]).filter(Boolean);
+        distribution = question.type === 'text' || question.type === 'order'
+          ? [answers.filter(a => a.credit === 1).length, answers.filter(a => a.credit < 1).length]
+          : question.options.map((_, i) => answers.filter(a => a.selected.includes(i)).length);
+      } else {
+        // Accepted typed answers and the correct order stay on the server until the reveal.
+        const order = room.orders?.[question.id];
+        publicQuestion = { ...shown, options: question.type === 'text' ? [] : question.type === 'order' && order ? order.map(i => question.options[i]) : question.options };
+      }
+    }
+    return {
+      options, active, revealed, graded, totals, sorted, positions, ranks, question, publicQuestion, distribution, teams, visible, hidden,
+      visibleList: sorted.map(visible), hiddenList: sorted.map(hidden),
+      hostList: [...sorted, ...room.players.filter(p => !p.approved && !p.removed)].map(visible),
+      answered: question ? active.filter(p => p.answers[question.id]).length : 0,
+      classScore: denominator ? Math.round(100 * accuracy / denominator) : 0,
+    };
+  }
+  snapshot(credentials: Credentials): Snapshot {
+    const { room, role, player } = this.authorize(credentials);
+    let cached = this.cache.get(room);
+    if (!cached || cached.seq !== room.seq || cached.leaderboard !== room.leaderboard) { cached = { seq: room.seq, leaderboard: room.leaderboard, value: this.shared(room) }; this.cache.set(room, cached); }
+    const shared = cached.value;
+    const { question, revealed, totals, sorted } = shared;
     const snapshot: Snapshot = {
       pin: room.pin, title: room.quiz.title, seq: room.seq, phase: room.phase, mode: room.mode,
       approval: room.approval, locked: room.locked, leaderboard: room.leaderboard, index: room.index,
       total: room.quiz.questions.length, deadline: room.deadline, remaining: room.remaining,
-      paused: room.remaining !== null, players: [], playerCount: active.length,
-      answered: question ? active.filter(p => p.answers[question.id]).length : 0,
-      classScore: denominator ? Math.round(100 * accuracy / denominator) : 0, serverTime: Date.now(),
-      opensAt: room.phase === 'question' ? room.startedAt : null, options,
+      paused: room.remaining !== null, players: [], playerCount: shared.active.length,
+      answered: shared.answered, classScore: shared.classScore, serverTime: Date.now(),
+      opensAt: room.phase === 'question' ? room.startedAt : null, options: shared.options,
     };
-    if (role === 'host') snapshot.players = [...sorted, ...room.players.filter(p => !p.approved && !p.removed)].map(publicPlayer);
-    else if (room.phase === 'lobby' || room.leaderboard && revealed) snapshot.players = sorted.map(publicPlayer);
-    if (options.teams && room.index >= 0 && (room.leaderboard || role === 'host')) {
-      // Team score is the members' average, so uneven teams stay fair.
-      const teams = teamNames.map((name, id) => {
-        const members = active.filter(p => p.team === id);
-        return { id, name, members: members.length, score: members.length ? Math.round(members.reduce((n, p) => n + totals.get(p.id)!, 0) / members.length) : 0, rank: 0 };
-      }).filter(t => t.members > 0).sort((a, b) => b.score - a.score);
-      teams.forEach((t: TeamStanding) => { t.rank = 1 + teams.filter(o => o.score > t.score).length; });
-      snapshot.teams = teams;
-    }
+    if (role === 'host') snapshot.players = shared.hostList;
+    else if (room.phase === 'lobby' || room.leaderboard && revealed) snapshot.players = room.leaderboard ? shared.visibleList : shared.hiddenList;
+    if (shared.teams && (room.leaderboard || role === 'host')) snapshot.teams = shared.teams;
     if (question && (!player || player.approved)) {
-      const { correct, explanation, revealImage, image, ...publicQuestion } = question;
-      const shown = { ...publicQuestion, ...(image ? { image: this.mediaUrl(room, question, 'image') } : {}) };
-      if (revealed) snapshot.question = { ...shown, correct, explanation, ...(revealImage ? { revealImage: this.mediaUrl(room, question, 'reveal') } : {}) };
-      else {
-        // Accepted typed answers and the correct order stay on the server until the reveal.
-        const order = room.orders?.[question.id];
-        const options = question.type === 'text' ? [] : question.type === 'order' && order ? order.map(i => question.options[i]) : question.options;
-        snapshot.question = { ...shown, options };
-      }
-      if (revealed) {
-        const answers = active.map(p => p.answers[question.id]).filter(Boolean);
-        snapshot.distribution = question.type === 'text' || question.type === 'order'
-          ? [answers.filter(a => a.credit === 1).length, answers.filter(a => a.credit < 1).length]
-          : question.options.map((_, i) => answers.filter(a => a.selected.includes(i)).length);
-      }
+      snapshot.question = shared.publicQuestion;
+      if (shared.distribution) snapshot.distribution = shared.distribution;
     }
     if (player) {
-      snapshot.me = { ...publicPlayer(player), selected: current?.selected, text: current?.text };
+      const current = question ? player.answers[question.id] : undefined;
+      const me = player.approved && !player.removed ? shared.visible(player) : { ...shared.visible(player), score: 0, rank: 0 };
+      snapshot.me = { ...me, selected: current?.selected, text: current?.text };
       if (revealed && current) { snapshot.me.points = current.points; snapshot.me.credit = current.credit; }
       let streak = 0;
-      for (const q of [...graded].reverse()) { if (player.answers[q.id]?.credit === 1) streak++; else break; }
+      for (const q of [...shared.graded].reverse()) { if (player.answers[q.id]?.credit === 1) streak++; else break; }
       snapshot.me.streak = streak;
-      if (room.leaderboard && room.index >= 0) {
+      const position = shared.positions.get(player.id);
+      if (room.leaderboard && room.index >= 0 && position !== undefined) {
         const mine = totals.get(player.id) || 0;
-        const above = sorted.filter(p => totals.get(p.id)! > mine).at(-1);
-        const below = sorted.find(p => totals.get(p.id)! < mine);
+        let above: Player | undefined, below: Player | undefined;
+        for (let i = position - 1; i >= 0; i--) if (totals.get(sorted[i].id)! > mine) { above = sorted[i]; break; }
+        if (!above) for (let i = position + 1; i < sorted.length; i++) if (totals.get(sorted[i].id)! < mine) { below = sorted[i]; break; }
         if (above) snapshot.me.gap = { name: above.name, points: totals.get(above.id)! - mine, ahead: true };
         else if (below) snapshot.me.gap = { name: below.name, points: mine - totals.get(below.id)!, ahead: false };
       }

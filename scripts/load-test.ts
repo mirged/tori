@@ -2,13 +2,25 @@ import { performance } from 'node:perf_hooks';
 import { cpus, totalmem, tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import { io, type Socket } from 'socket.io-client';
 import { createTori } from '../apps/server/src/server.js';
 import { samples } from '../packages/shared/src/samples.js';
 import type { Credentials, Snapshot } from '../packages/shared/src/protocol.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'tori-load-')); const sockets: Socket[] = [];
+// A ~350 KB question image: it must be served once over HTTP, never inside live updates.
+function noisePng(width: number, height: number) {
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) randomBytes(width * 3).copy(raw, y * (width * 3 + 1) + 1);
+  const crc = (buf: Buffer) => { let c = ~0; for (const b of buf) { c ^= b; for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1; } return ~c >>> 0; };
+  const chunk = (type: string, data: Buffer) => { const head = Buffer.from(type); const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const sum = Buffer.alloc(4); sum.writeUInt32BE(crc(Buffer.concat([head, data]))); return Buffer.concat([len, head, data, sum]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr.set([8, 2, 0, 0, 0], 8);
+  return 'data:image/png;base64,' + Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+}
+const quiz = { ...samples[0], questions: samples[0].questions.map((q, i) => i === 0 ? { ...q, image: noisePng(340, 340) } : q) };
+let largestUpdate = 0;
 const server = await createTori({ database: join(dir, 'load.sqlite'), web: false });
 async function waitFor(predicate: () => boolean) {
   const deadline = Date.now() + 10_000;
@@ -24,7 +36,7 @@ try {
   }
   async function connect(credentials: Credentials) {
     const socket = io(base, { autoConnect: false, reconnection: false, auth: credentials }); sockets.push(socket);
-    let state: Snapshot; socket.on('snapshot', next => { state = next; });
+    let state: Snapshot; socket.on('snapshot', next => { state = next; largestUpdate = Math.max(largestUpdate, JSON.stringify(next).length); });
     const ready = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Connection timed out.')), 10_000);
       socket.once('snapshot', () => { clearTimeout(timeout); resolve(); });
@@ -33,7 +45,7 @@ try {
     return { socket, state: () => state };
   }
   async function room(count: number) {
-    const host = await post('/api/rooms', { quiz: samples[0], mode: 'accuracy', approval: false, leaderboard: true });
+    const host = await post('/api/rooms', { quiz, mode: 'accuracy', approval: false, leaderboard: true });
     const h = await connect({ ...host, role: 'host' });
     const players = await Promise.all(Array.from({ length: count }, async (_, i) => connect({ ...await post('/api/join', { pin: host.pin, name: `Curious ${i}` }), role: 'player' })));
     const projector = await connect({ pin: host.pin, role: 'projector' });
@@ -57,14 +69,17 @@ try {
       if (!reply.ok) throw new Error(reply.error);
     }
     await waitFor(() => rooms.every(r => r.players.every(p => p.state().me?.points === 1000)));
+    const image = rooms[0].players[0].state().question?.image;
+    if (!image?.startsWith('/api/')) throw new Error('Question images must be sent as URLs.');
+    const fetched = await fetch(base + image); if (!fetched.ok || (await fetched.arrayBuffer()).byteLength < 100_000) throw new Error('Question image did not load.');
     latencies.sort((a, b) => a - b);
     const p95 = latencies[Math.ceil(latencies.length * .95) - 1];
     for (const r of rooms) { r.h.socket.disconnect(); r.projector.socket.disconnect(); r.players.forEach(p => p.socket.disconnect()); }
-    return { rooms: roomCount, playersPerRoom, acknowledgements: latencies.length, lostOrInconsistent: 0, p95Ms: Math.round(p95 * 100) / 100, targetUnder300ms: p95 < 300 };
+    return { rooms: roomCount, playersPerRoom, acknowledgements: latencies.length, lostOrInconsistent: 0, p95Ms: Math.round(p95 * 100) / 100, targetUnder300ms: p95 < 300, largestUpdateBytes: largestUpdate, updatesUnder20kB: largestUpdate < 20_000 };
   }
   const results = [await benchmark(1, 100), await benchmark(10, 30)];
   console.log(JSON.stringify({ date: new Date().toISOString(), machine: { cpu: cpus()[0]?.model, logicalCpus: cpus().length, memoryGiB: Math.round(totalmem() / 2 ** 30), node: process.version }, network: 'Loopback, same process and machine; tiny bundled quiz; no images', results }, null, 2));
-  if (results.some(result => !result.targetUnder300ms)) process.exitCode = 1;
+  if (results.some(result => !result.targetUnder300ms || !result.updatesUnder20kB)) process.exitCode = 1;
 } catch (error) {
   console.error('Load test could not complete:', error instanceof Error ? error.message : error); process.exitCode = 1;
 } finally { sockets.forEach(socket => socket.disconnect()); await server.close(); rmSync(dir, { recursive: true, force: true }); }
