@@ -4,12 +4,15 @@ import QRCode from 'qrcode';
 import { READY_MS, teamNames, type Ack, type Action, type AnswerRequest, type Credentials, type Quiz, type Review, type Role, type Snapshot } from '../../../packages/shared/src/protocol';
 import { Brand, Icon, Shape, shapeNames } from './icons';
 import { download, errorText, rules, uid } from './lib';
-import { HostModal, Modal, navigate } from './App';
+import { HostModal, LangPicker, Modal, navigate } from './App';
+import { num, onLangChange, place, plural, rankLabel, t } from './i18n';
 
-const ordinal = (n: number) => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 const typeLabel = { single: 'Quiz', boolean: 'True or false', multiple: 'Select all that apply', poll: 'Poll', text: 'Type answer', order: 'Puzzle' } as const;
 const choiceLike = (type: string) => type === 'single' || type === 'boolean' || type === 'multiple' || type === 'poll';
-const gapText = (gap: { name: string; points: number; ahead: boolean }) => gap.ahead ? `${gap.points.toLocaleString()} points behind ${gap.name}` : `${gap.points.toLocaleString()} points ahead of ${gap.name}`;
+const gapText = (gap: { name: string; points: number; ahead: boolean }) => t(gap.ahead ? '{points} behind {name}' : '{points} ahead of {name}', { points: plural(gap.points, 'point'), name: gap.name });
+const teamName = (id: number) => t(`Team ${teamNames[id]}`);
+/** Fixed answers like True/False are translated; quiz content is shown as written. */
+const optionText = (type: string, option: string) => type === 'boolean' ? t(option) : option;
 const isLocalHost = (host: string) => host === 'localhost' || host.startsWith('127.') || host === '[::1]';
 const stored = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
 const remember = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* optional preference */ } };
@@ -22,24 +25,26 @@ function Confetti() {
 }
 function TimerRing({ seconds, remaining, total, paused }: { seconds: number; remaining: number; total: number; paused: boolean }) {
   const fraction = Math.max(0, Math.min(1, remaining / (total * 1000)));
-  return <div className={`timer-ring ${seconds <= 5 ? 'urgent' : ''}`} role="timer" aria-label={paused ? 'Timer paused' : `${seconds} seconds remaining`}>
+  return <div className={`timer-ring ${seconds <= 5 ? 'urgent' : ''}`} role="timer" aria-label={paused ? t('Timer paused') : t('{n} seconds remaining', { n: seconds })}>
     <svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" className="ring-bg" /><circle cx="50" cy="50" r="44" className="ring-fg" pathLength={1} strokeDasharray="1" strokeDashoffset={1 - fraction} /></svg>
     <span>{paused ? <Icon name="pause" size={30} /> : seconds}</span>
   </div>;
 }
 function ClassScore({ score }: { score: number }) {
-  return <div className="class-score"><span>Class accuracy</span><strong>{score}%</strong><div className="class-meter"><span style={{ width: `${score}%` }} /></div><p>Every bit of knowledge adds up.</p></div>;
+  return <div className="class-score"><span>{t('Class accuracy')}</span><strong>{score}%</strong><div className="class-meter"><span style={{ width: `${score}%` }} /></div><p>{t('Every bit of knowledge adds up.')}</p></div>;
 }
 /** What the player answered and what was right, in words, for any question type. */
 function describe(item: Pick<Review, 'question' | 'selected' | 'text'>) {
   const { question: q } = item;
-  const yours = q.type === 'text' ? item.text || '' : q.type === 'order' ? item.selected.map(n => q.options[n]).join(' → ') : item.selected.map(n => q.options[n]).join(', ');
-  const right = q.type === 'text' ? q.options.join(' / ') : q.type === 'order' ? q.options.join(' → ') : q.type === 'poll' ? '' : q.correct.map(n => q.options[n]).join(', ');
+  const yours = q.type === 'text' ? item.text || '' : q.type === 'order' ? item.selected.map(n => q.options[n]).join(' → ') : item.selected.map(n => optionText(q.type, q.options[n])).join(', ');
+  const right = q.type === 'text' ? q.options.join(' / ') : q.type === 'order' ? q.options.join(' → ') : q.type === 'poll' ? '' : q.correct.map(n => optionText(q.type, q.options[n])).join(', ');
   return { yours, right };
 }
 
 export function Game({ pin, role }: { pin: string; role: Role }) {
   const isHost = role === 'host'; const isPlayer = role === 'player'; const isScreen = !isPlayer;
+  const [, rerender] = useState(0);
+  useEffect(() => onLangChange(() => rerender(n => n + 1)), []);
   const [state, setState] = useState<Snapshot | null>(null);
   const [connected, setConnected] = useState(false); const [fatal, setFatal] = useState(''); const [error, setError] = useState('');
   const [busy, setBusy] = useState(false); const [selected, setSelected] = useState<number[]>([]); const [typed, setTyped] = useState(''); const [answerBusy, setAnswerBusy] = useState(false);
@@ -62,7 +67,7 @@ export function Game({ pin, role }: { pin: string; role: Role }) {
   useEffect(() => {
     let token: string | undefined;
     try { token = role === 'projector' ? undefined : localStorage.getItem(`tori.${role}.${pin}`) || undefined; } catch { setFatal('Browser storage is unavailable. Reopen this game in the browser where you joined.'); return; }
-    if (role !== 'projector' && !token) { setFatal(`This browser doesn’t have the private ${role} credential for this game.`); return; }
+    if (role !== 'projector' && !token) { setFatal(role === 'host' ? 'This browser doesn’t have the private host credential for this game.' : 'This browser doesn’t have the private player credential for this game.'); return; }
     const fail = (message: string) => {
       // A kicked player cannot simply rejoin this game from the same browser.
       if (/removed from this game/.test(message)) remember(`tori.kicked.${pin}`, '1');
@@ -214,59 +219,60 @@ export function Game({ pin, role }: { pin: string; role: Role }) {
   }
   function copyLink() {
     const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1800); };
-    if (navigator.clipboard) navigator.clipboard.writeText(joinUrl).then(done).catch(() => setError(`Copy this link: ${joinUrl}`));
-    else setError(`Copy this link: ${joinUrl}`);
+    if (navigator.clipboard) navigator.clipboard.writeText(joinUrl).then(done).catch(() => setError(t('Copy this link: {url}', { url: joinUrl })));
+    else setError(t('Copy this link: {url}', { url: joinUrl }));
   }
   const controlsDisabled = busy || !connected;
   const ranked = (state?.players || []).filter(p => p.approved);
   const teamMode = !!state?.options.teams;
   const soundOn = isPlayer ? sfxOn : musicOn || sfxOn;
   const toolbar = <div className="game-tools">
-    <span className={`conn-dot ${connected ? 'online' : ''}`} role="status" title={connected ? 'Connected' : 'Reconnecting'}><span className="sr-only">{connected ? 'Connected' : fatal ? 'Disconnected' : 'Reconnecting…'}</span></span>
-    {isPlayer ? <button className="tool-btn" onClick={() => { void unlockAudio(); setSfxOn(!sfxOn); }} aria-label={sfxOn ? 'Mute sound effects' : 'Enable sound effects'} aria-pressed={sfxOn} title={sfxOn ? 'Mute' : 'Sound on'}><Icon name={sfxOn ? 'sound' : 'mute'} size={19} /></button>
-      : <div className="sound-wrap"><button className="tool-btn" onClick={() => setSoundMenu(!soundMenu)} aria-label="Sound settings" aria-expanded={soundMenu} aria-pressed={soundOn} title="Sound"><Icon name={soundOn && volume ? 'sound' : 'mute'} size={19} /></button>
-        {soundMenu && <div className="sound-menu" role="dialog" aria-label="Sound settings">
-          <label className="sound-row"><span>Music</span><input type="checkbox" role="switch" className="switch" checked={musicOn} onChange={e => { void unlockAudio(); setMusicOn(e.target.checked); }} /></label>
-          <label className="sound-row"><span>Sound effects</span><input type="checkbox" role="switch" className="switch" checked={sfxOn} onChange={e => { void unlockAudio(); setSfxOn(e.target.checked); }} /></label>
-          <label className="sound-row volume"><span>Volume <small>{Math.round(volume * 100)}%</small></span><input type="range" min={0} max={1} step={.05} value={volume} onChange={e => setVolume(Number(e.target.value))} /></label>
-          <button className="btn blue small full" onClick={() => setSoundMenu(false)}>Done</button>
+    <span className={`conn-dot ${connected ? 'online' : ''}`} role="status" title={connected ? t('Connected') : t('Reconnecting…')}><span className="sr-only">{connected ? t('Connected') : fatal ? t('Disconnected') : t('Reconnecting…')}</span></span>
+    {isPlayer ? <button className="tool-btn" onClick={() => { void unlockAudio(); setSfxOn(!sfxOn); }} aria-label={sfxOn ? t('Mute sound effects') : t('Enable sound effects')} aria-pressed={sfxOn} title={sfxOn ? t('Mute sound effects') : t('Enable sound effects')}><Icon name={sfxOn ? 'sound' : 'mute'} size={19} /></button>
+      : <div className="sound-wrap"><button className="tool-btn" onClick={() => setSoundMenu(!soundMenu)} aria-label={t('Sound settings')} aria-expanded={soundMenu} aria-pressed={soundOn} title={t('Sound settings')}><Icon name={soundOn && volume ? 'sound' : 'mute'} size={19} /></button>
+        {soundMenu && <div className="sound-menu" role="dialog" aria-label={t('Sound settings')}>
+          <label className="sound-row"><span>{t('Music')}</span><input type="checkbox" role="switch" className="switch" checked={musicOn} onChange={e => { void unlockAudio(); setMusicOn(e.target.checked); }} /></label>
+          <label className="sound-row"><span>{t('Sound effects')}</span><input type="checkbox" role="switch" className="switch" checked={sfxOn} onChange={e => { void unlockAudio(); setSfxOn(e.target.checked); }} /></label>
+          <label className="sound-row volume"><span>{t('Volume')} <small>{Math.round(volume * 100)}%</small></span><input type="range" min={0} max={1} step={.05} value={volume} onChange={e => setVolume(Number(e.target.value))} /></label>
+          <button className="btn blue small full" onClick={() => setSoundMenu(false)}>{t('Done')}</button>
         </div>}
       </div>}
-    {isScreen && <button className="tool-btn" onClick={toggleFullscreen} aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} title="Fullscreen (F)"><Icon name={fullscreen ? 'shrink' : 'expand'} size={19} /></button>}
-    <button className="tool-btn" aria-label="Reduce motion" aria-pressed={reduced} onClick={() => setReduced(!reduced)} title="Reduce motion"><Icon name="motion" size={19} /></button>
-    <button className="tool-btn" aria-label="Scoring rules" onClick={() => setShowRules(true)} title="Rules"><Icon name="help" size={19} /></button>
-    {isHost && state && !fatal && state.phase !== 'finished' && <button className="tool-btn danger-tool" aria-label="End game" title="End game" onClick={() => setDeleting(true)}><Icon name="close" size={19} /></button>}
+    <LangPicker compact />
+    {isScreen && <button className="tool-btn" onClick={toggleFullscreen} aria-label={fullscreen ? t('Exit fullscreen') : t('Fullscreen')} title={`${t('Fullscreen')} (F)`}><Icon name={fullscreen ? 'shrink' : 'expand'} size={19} /></button>}
+    <button className="tool-btn motion-btn" aria-label={t('Reduce motion')} aria-pressed={reduced} onClick={() => setReduced(!reduced)} title={t('Reduce motion')}><Icon name="motion" size={19} /></button>
+    <button className="tool-btn" aria-label={t('Scoring rules')} onClick={() => setShowRules(true)} title={t('Scoring rules')}><Icon name="help" size={19} /></button>
+    {isHost && state && !fatal && state.phase !== 'finished' && <button className="tool-btn danger-tool" aria-label={t('End game')} title={t('End game')} onClick={() => setDeleting(true)}><Icon name="close" size={19} /></button>}
   </div>;
-  const hostButton = (label: string, type: Action['type'], extra = '') => <button className={`btn white game-next ${extra}`} disabled={controlsDisabled} onClick={() => action(type)}>{label}<Icon name="arrow" size={18} /></button>;
-  const teamBoard = (s: Snapshot) => s.teams && <ol className="team-board">{s.teams.map((team, i) => <li key={team.id} className={`ans-${team.id}`} style={{ animationDelay: `${i * 90}ms` }}><span className="team-rank">{team.rank}</span><strong>Team {team.name}</strong><small>{team.members} {team.members === 1 ? 'player' : 'players'}</small><span>{team.score.toLocaleString()}</span></li>)}</ol>;
+  const hostButton = (label: string, type: Action['type'], extra = '') => <button className={`btn white game-next ${extra}`} disabled={controlsDisabled} onClick={() => action(type)}>{t(label)}<Icon name="arrow" size={18} /></button>;
+  const teamBoard = (s: Snapshot) => s.teams && <ol className="team-board">{s.teams.map((team, i) => <li key={team.id} className={`ans-${team.id}`} style={{ animationDelay: `${i * 90}ms` }}><span className="team-rank">{team.rank}</span><strong>{teamName(team.id)}</strong><small>{plural(team.members, 'player')}</small><span>{num(team.score)}</span></li>)}</ol>;
 
   function screenView(s: Snapshot) {
     const q = s.question;
     if (s.phase === 'lobby') return <div className="lobby">
       <section className="lobby-banner">
-        <div className="lobby-join"><span>Join at <strong>{joinHost}/join</strong></span><button className="copy-link" onClick={copyLink}><Icon name={copied ? 'check' : 'link'} size={15} />{copied ? 'Copied!' : 'Copy link'}</button>
-          {local && info && !info.publicUrl && !info.lan.length && <small className="lan-warning"><Icon name="warning" size={13} />Phones can’t reach “localhost”. Open Tori with this computer’s network address.</small>}</div>
-        <div className="lobby-pin"><span>Game PIN:</span><strong aria-label={`Game PIN ${pin.split('').join(' ')}`}>{pin.slice(0, 3)} {pin.slice(3)}</strong></div>
-        {qr && <button className="lobby-qr" onClick={() => setBigQr(true)} aria-label="Enlarge QR code"><img src={qr} alt={`QR code to join game ${pin}`} /></button>}
+        <div className="lobby-join"><span>{t('Join at')} <strong>{joinHost}/join</strong></span><button className="copy-link" onClick={copyLink}><Icon name={copied ? 'check' : 'link'} size={15} />{copied ? t('Copied!') : t('Copy link')}</button>
+          {local && info && !info.publicUrl && !info.lan.length && <small className="lan-warning"><Icon name="warning" size={13} />{t('Phones can’t reach “localhost”. Open Tori with this computer’s network address.')}</small>}</div>
+        <div className="lobby-pin"><span>{t('Game PIN')}:</span><strong aria-label={`${t('Game PIN')} ${pin.split('').join(' ')}`}>{pin.slice(0, 3)} {pin.slice(3)}</strong></div>
+        {qr && <button className="lobby-qr" onClick={() => setBigQr(true)} aria-label={t('Enlarge QR code')}><img src={qr} alt={t('QR code to join game {pin}', { pin })} /></button>}
       </section>
       <div className="lobby-row">
-        <div className="lobby-count"><Icon name="people" size={24} /><strong>{s.playerCount}</strong><span className="hide-mobile">{s.playerCount === 1 ? 'player' : 'players'}</span></div>
+        <div className="lobby-count"><Icon name="people" size={24} /><strong>{s.playerCount}</strong><span className="hide-mobile">{plural(s.playerCount, 'player', false)}</span></div>
         <div className="lobby-brand"><Brand light /></div>
         {isHost ? <div className="lobby-actions">
-          <button className={`tool-btn big ${s.locked ? 'on' : ''}`} disabled={controlsDisabled} onClick={() => action('lock')} aria-label={s.locked ? 'Unlock lobby' : 'Lock lobby'} title={s.locked ? 'Unlock lobby' : 'Lock lobby'}><Icon name={s.locked ? 'lock' : 'unlock'} size={20} /></button>
-          <a className="tool-btn big" href={`/projector/${pin}`} target="_blank" rel="noreferrer" aria-label="Open projector view" title="Projector view"><Icon name="monitor" size={20} /></a>
-          <button className="btn white game-next" disabled={controlsDisabled || !s.playerCount} onClick={() => action('start')}>Start</button>
+          <button className={`tool-btn big ${s.locked ? 'on' : ''}`} disabled={controlsDisabled} onClick={() => action('lock')} aria-label={s.locked ? t('Unlock lobby') : t('Lock lobby')} title={s.locked ? t('Unlock lobby') : t('Lock lobby')}><Icon name={s.locked ? 'lock' : 'unlock'} size={20} /></button>
+          <a className="tool-btn big" href={`/projector/${pin}`} target="_blank" rel="noreferrer" aria-label={t('Open projector view')} title={t('Open projector view')}><Icon name="monitor" size={20} /></a>
+          <button className="btn white game-next" disabled={controlsDisabled || !s.playerCount} onClick={() => action('start')}>{t('Start')}</button>
         </div> : <div className="lobby-actions" />}
       </div>
-      {s.locked && <p className="lobby-locked"><Icon name="lock" size={16} />Lobby locked — no new players can join</p>}
-      {s.players.length === 0 ? <div className="lobby-waiting"><span className="waiting-pill">Waiting for players…</span></div>
+      {s.locked && <p className="lobby-locked"><Icon name="lock" size={16} />{t('Lobby locked — no new players can join')}</p>}
+      {s.players.length === 0 ? <div className="lobby-waiting"><span className="waiting-pill">{t('Waiting for players…')}</span></div>
         : <div className="name-cloud">{s.players.map(p => <div key={p.id} className={`name-tile ${!p.approved ? 'pending' : ''}`}>
-          {isHost ? <>{!p.approved && <button className="name-approve" aria-label={`Approve ${p.name}`} disabled={controlsDisabled} onClick={() => action('approve', p.id)}><Icon name="check" size={16} /></button>}<button className="name-kick" aria-label={`Remove ${p.name}`} title="Remove player" disabled={controlsDisabled} onClick={() => action('remove', p.id, () => { if (!s.locked) setKickPrompt(p.name); })}><span>{p.name}</span><Icon name="close" size={14} /></button></> : <span>{p.name}</span>}
+          {isHost ? <>{!p.approved && <button className="name-approve" aria-label={t('Approve {name}', { name: p.name })} disabled={controlsDisabled} onClick={() => action('approve', p.id)}><Icon name="check" size={16} /></button>}<button className="name-kick" aria-label={t('Remove {name}', { name: p.name })} title={t('Remove player')} disabled={controlsDisabled} onClick={() => action('remove', p.id, () => { if (!s.locked) setKickPrompt(p.name); })}><span>{p.name}</span><Icon name="close" size={14} /></button></> : <span>{p.name}</span>}
         </div>)}</div>}
-      <p className="lobby-mode"><Icon name={s.mode === 'accuracy' ? 'leaf' : 'spark'} size={16} />{s.mode === 'accuracy' ? 'Accuracy mode' : 'Classic mode'} · {s.total} questions{teamMode && ' · Team mode — teams are drawn at the start'}{isHost && <span className="hide-mobile"> · Press Space to start</span>}</p>
+      <p className="lobby-mode"><Icon name={s.mode === 'accuracy' ? 'leaf' : 'spark'} size={16} />{s.mode === 'accuracy' ? t('Accuracy mode') : t('Classic mode')} · {plural(s.total, 'question')}{teamMode && ` · ${t('Team mode — teams are drawn at the start')}`}{isHost && <span className="hide-mobile"> · {t('Press Space to start')}</span>}</p>
     </div>;
     if (s.phase === 'question' && q && ready) return <div className="get-ready">
-      <span className="type-chip">Question {s.index + 1} of {s.total} · {typeLabel[q.type]}{q.points === 'double' ? ' · Double points!' : q.points === 'none' ? ' · No points' : ''}</span>
+      <span className="type-chip">{t('Question {n} of {total}', { n: s.index + 1, total: s.total })} · {t(typeLabel[q.type])}{q.points === 'double' ? ` · ${t('Double points!')}` : q.points === 'none' ? ` · ${t('No points')}` : ''}</span>
       <h1 className="ready-question">{q.text}</h1>
       <div className="ready-bar"><span style={{ width: `${Math.max(0, Math.min(100, opensIn / READY_MS * 100))}%` }} /></div>
     </div>;
@@ -274,50 +280,50 @@ export function Game({ pin, role }: { pin: string; role: Role }) {
       const reveal = s.phase === 'reveal'; const max = Math.max(1, ...(s.distribution || [0]));
       const graded = q.type !== 'poll'; const right = (i: number) => graded && !!q.correct?.includes(i);
       const center = reveal
-        ? choiceLike(q.type) ? <div className="bars" role="img" aria-label={`Answers: ${q.options.map((o, i) => `${o} ${s.distribution?.[i] || 0}`).join(', ')}`}>{q.options.map((_, i) => <div key={i} className={`bar ans-${i} ${!graded ? '' : right(i) ? 'right' : 'wrong'}`}><span className="bar-count">{s.distribution?.[i] || 0}</span><span className="bar-fill" style={{ height: `${Math.max(4, (s.distribution?.[i] || 0) / max * 100)}%` }} /><span className="bar-label"><Shape index={i} size={20} />{right(i) && <Icon name="check" size={20} />}</span></div>)}</div>
-          : <div className="big-stat"><strong>{s.distribution?.[0] || 0}<small> / {s.answered}</small></strong><span>{q.type === 'text' ? 'typed a correct answer' : 'got the perfect order'}</span></div>
-        : q.image ? <img className="stage-image" src={q.image} alt="Question illustration" /> : <div className="stage-placeholder" aria-hidden="true"><Shape index={s.index % 4} size={90} /></div>;
+        ? choiceLike(q.type) ? <div className="bars" role="img" aria-label={`${t('Answers')}: ${q.options.map((o, i) => `${optionText(q.type, o)} ${s.distribution?.[i] || 0}`).join(', ')}`}>{q.options.map((_, i) => <div key={i} className={`bar ans-${i} ${!graded ? '' : right(i) ? 'right' : 'wrong'}`}><span className="bar-count">{s.distribution?.[i] || 0}</span><span className="bar-fill" style={{ height: `${Math.max(4, (s.distribution?.[i] || 0) / max * 100)}%` }} /><span className="bar-label"><Shape index={i} size={20} />{right(i) && <Icon name="check" size={20} />}</span></div>)}</div>
+          : <div className="big-stat"><strong>{s.distribution?.[0] || 0}<small> / {s.answered}</small></strong><span>{q.type === 'text' ? t('typed a correct answer') : t('got the perfect order')}</span></div>
+        : q.image ? <img className="stage-image" src={q.image} alt={t('Question illustration')} /> : <div className="stage-placeholder" aria-hidden="true"><Shape index={s.index % 4} size={90} /></div>;
       const tiles = q.type === 'text'
-        ? <div className="play-grid count-1">{reveal ? q.options.map((option, i) => <div key={i} className="play-tile accepted right"><Icon name="check" size={30} /><span>{option}</span></div>) : <div className="play-tile type-tile"><Icon name="edit" size={30} /><span>Type your answer on your device</span></div>}</div>
+        ? <div className="play-grid count-1">{reveal ? q.options.map((option, i) => <div key={i} className="play-tile accepted right"><Icon name="check" size={30} /><span>{option}</span></div>) : <div className="play-tile type-tile"><Icon name="edit" size={30} /><span>{t('Type your answer on your device')}</span></div>}</div>
         : q.type === 'order'
           ? <div className={`play-grid order-grid count-${q.options.length}`}>{q.options.map((option, i) => <div key={i} className={`play-tile ans-${i}`}>{reveal ? <strong className="order-num">{i + 1}</strong> : <Shape index={i} size={34} />}<span>{option}</span></div>)}</div>
-          : <div className={`play-grid count-${q.options.length}`}>{q.options.map((option, i) => <div key={i} className={`play-tile ans-${i} ${reveal && graded ? right(i) ? 'right' : 'wrong' : ''}`}><Shape index={i} size={34} /><span>{option}</span>{reveal && graded && (right(i) ? <Icon name="check" size={30} /> : <Icon name="close" size={26} />)}</div>)}</div>;
+          : <div className={`play-grid count-${q.options.length}`}>{q.options.map((option, i) => <div key={i} className={`play-tile ans-${i} ${reveal && graded ? right(i) ? 'right' : 'wrong' : ''}`}><Shape index={i} size={34} /><span>{optionText(q.type, option)}</span>{reveal && graded && (right(i) ? <Icon name="check" size={30} /> : <Icon name="close" size={26} />)}</div>)}</div>;
       return <div className={`stage ${reveal ? 'revealed' : ''}`}>
         <h1 className="stage-question" key={q.id}>{q.text}</h1>
-        {!reveal && <div className="answer-progress" role="progressbar" aria-label="Answers in" aria-valuemin={0} aria-valuemax={s.playerCount} aria-valuenow={s.answered}><span style={{ width: `${s.playerCount ? s.answered / s.playerCount * 100 : 0}%` }} /></div>}
+        {!reveal && <div className="answer-progress" role="progressbar" aria-label={t('Answers in')} aria-valuemin={0} aria-valuemax={s.playerCount} aria-valuenow={s.answered}><span style={{ width: `${s.playerCount ? s.answered / s.playerCount * 100 : 0}%` }} /></div>}
         <div className="stage-middle">
-          <div className="stage-side">{!reveal ? <TimerRing seconds={seconds} remaining={remaining} total={q.seconds} paused={s.paused} /> : <span className="type-chip">{typeLabel[q.type]}{q.points === 'double' ? ' · 2×' : ''}</span>}</div>
+          <div className="stage-side">{!reveal ? <TimerRing seconds={seconds} remaining={remaining} total={q.seconds} paused={s.paused} /> : <span className="type-chip">{t(typeLabel[q.type])}{q.points === 'double' ? ' · 2×' : ''}</span>}</div>
           <div className="stage-center">{center}</div>
-          <div className="stage-side right">{!reveal ? <div className="answer-count"><strong>{s.answered}</strong><span>of {s.playerCount} answered</span></div> : isHost && graded && <div className="answer-count small"><strong>{s.classScore}%</strong><span>class accuracy</span></div>}
-            {isHost && (reveal ? hostButton('Next', 'next') : <div className="stage-controls"><button className="btn white small" disabled={controlsDisabled} onClick={() => action(s.paused ? 'resume' : 'pause')}><Icon name={s.paused ? 'play' : 'pause'} size={16} />{s.paused ? 'Resume' : 'Pause'}</button>{hostButton('Skip', 'close', 'small')}</div>)}
+          <div className="stage-side right">{!reveal ? <div className="answer-count"><strong>{s.answered}</strong><span>{t('of {n} answered', { n: s.playerCount })}</span></div> : isHost && graded && <div className="answer-count small"><strong>{s.classScore}%</strong><span>{t('class accuracy')}</span></div>}
+            {isHost && (reveal ? hostButton('Next', 'next') : <div className="stage-controls"><button className="btn white small" disabled={controlsDisabled} onClick={() => action(s.paused ? 'resume' : 'pause')}><Icon name={s.paused ? 'play' : 'pause'} size={16} />{s.paused ? t('Resume') : t('Pause')}</button>{hostButton('Skip', 'close', 'small')}</div>)}
           </div>
         </div>
-        {reveal && (q.explanation || q.revealImage) && <div className="stage-explanation">{q.revealImage && <img src={q.revealImage} alt="Reveal" />}{q.explanation && <p><Icon name="spark" size={18} />{q.explanation}</p>}</div>}
+        {reveal && (q.explanation || q.revealImage) && <div className="stage-explanation">{q.revealImage && <img src={q.revealImage} alt={t('Reveal image')} />}{q.explanation && <p><Icon name="spark" size={18} />{q.explanation}</p>}</div>}
         {tiles}
       </div>;
     }
     if (s.phase === 'standings') return <div className="scoreboard">
-      <h1 className="pill-title">Scoreboard</h1>
-      {s.leaderboard ? <>{teamBoard(s)}<ol className={`score-list ${teamMode ? 'compact' : ''}`}>{ranked.slice(0, teamMode ? 3 : 5).map((p, i) => <li key={p.id} style={{ animationDelay: `${i * 80}ms` }}><span className="score-rank">{p.rank}</span><strong>{p.name}</strong>{p.team !== undefined && <span className={`team-dot ans-${p.team}`} title={`Team ${teamNames[p.team]}`} />}<span>{p.score.toLocaleString()}</span></li>)}</ol></>
+      <h1 className="pill-title">{t('Scoreboard')}</h1>
+      {s.leaderboard ? <>{teamBoard(s)}<ol className={`score-list ${teamMode ? 'compact' : ''}`}>{ranked.slice(0, teamMode ? 3 : 5).map((p, i) => <li key={p.id} style={{ animationDelay: `${i * 80}ms` }}><span className="score-rank">{p.rank}</span><strong>{p.name}</strong>{p.team !== undefined && <span className={`team-dot ans-${p.team}`} title={teamName(p.team)} />}<span>{num(p.score)}</span></li>)}</ol></>
         : <ClassScore score={s.classScore} />}
-      <div className="scoreboard-foot"><span className="type-chip">Question {s.index + 1} of {s.total} · class accuracy {s.classScore}%</span>{isHost && <div className="stage-controls"><button className="btn ghost-light small" disabled={controlsDisabled} onClick={() => action('leaderboard')}>{s.leaderboard ? 'Hide scores' : 'Show scores'}</button>{hostButton(s.index + 1 === s.total ? 'Podium' : 'Next', 'next')}</div>}</div>
+      <div className="scoreboard-foot"><span className="type-chip">{t('Question {n} of {total}', { n: s.index + 1, total: s.total })} · {t('class accuracy')} {s.classScore}%</span>{isHost && <div className="stage-controls"><button className="btn ghost-light small" disabled={controlsDisabled} onClick={() => action('leaderboard')}>{s.leaderboard ? t('Hide scores') : t('Show scores')}</button>{hostButton(s.index + 1 === s.total ? 'Podium' : 'Next', 'next')}</div>}</div>
     </div>;
     if (s.phase === 'finished') {
-      const entries = teamMode && s.teams?.length ? s.teams.map(t => ({ id: String(t.id), name: `Team ${t.name}`, score: t.score, rank: t.rank, color: t.id })) : ranked.map(p => ({ id: p.id, name: p.name, score: p.score, rank: p.rank, color: -1 }));
+      const entries = teamMode && s.teams?.length ? s.teams.map(team => ({ id: String(team.id), name: teamName(team.id), score: team.score, rank: team.rank, color: team.id })) : ranked.map(p => ({ id: p.id, name: p.name, score: p.score, rank: p.rank, color: -1 }));
       const top = entries.slice(0, 3); const order = [top[1], top[0], top[2]];
       return <div className="podium-screen">
         {!reduced && <Confetti />}
         <h1 className="pill-title">{s.title}</h1>
-        {s.leaderboard && top.length ? <div className="podium">{order.map((p, n) => p ? <div key={p.id} className={`podium-col place-${Math.min(p.rank, 3)} ${p.color >= 0 ? `team ans-${p.color}` : ''}`} style={{ animationDelay: `${[600, 1200, 0][n]}ms` }}><strong className="podium-name">{p.name}</strong><div className="podium-block"><span className="medal">{p.rank}</span><span className="podium-score">{p.score.toLocaleString()}</span></div></div> : <div key={n} className="podium-col empty" />)}</div>
+        {s.leaderboard && top.length ? <div className="podium">{order.map((p, n) => p ? <div key={p.id} className={`podium-col place-${Math.min(p.rank, 3)} ${p.color >= 0 ? `team ans-${p.color}` : ''}`} style={{ animationDelay: `${[600, 1200, 0][n]}ms` }}><strong className="podium-name">{p.name}</strong><div className="podium-block"><span className="medal">{p.rank}</span><span className="podium-score">{num(p.score)}</span></div></div> : <div key={n} className="podium-col empty" />)}</div>
           : <ClassScore score={s.classScore} />}
-        {teamMode && s.leaderboard && ranked[0] && <p className="mvp"><Icon name="trophy" size={18} />Top player: <strong>{ranked[0].name}</strong> · {ranked[0].score.toLocaleString()}</p>}
+        {teamMode && s.leaderboard && ranked[0] && <p className="mvp"><Icon name="trophy" size={18} />{t('Top player:')} <strong>{ranked[0].name}</strong> · {num(ranked[0].score)}</p>}
         {isHost && <div className="finish-controls">
-          <button className="btn white" onClick={() => { if (s.hostQuiz) setReplay(s.hostQuiz); }}><Icon name="play" size={16} />Play again</button>
-          <button className="btn ghost-light" onClick={() => void exportResults()}><Icon name="download" size={17} />Download results</button>
-          <button className="btn ghost-light" disabled={controlsDisabled} onClick={() => action('leaderboard')}>{s.leaderboard ? 'Hide podium' : 'Show podium'}</button>
-          <button className="btn ghost-light danger-light" onClick={() => setDeleting(true)}><Icon name="trash" size={17} />Delete game data</button>
+          <button className="btn white" onClick={() => { if (s.hostQuiz) setReplay(s.hostQuiz); }}><Icon name="play" size={16} />{t('Play again')}</button>
+          <button className="btn ghost-light" onClick={() => void exportResults()}><Icon name="download" size={17} />{t('Download results')}</button>
+          <button className="btn ghost-light" disabled={controlsDisabled} onClick={() => action('leaderboard')}>{s.leaderboard ? t('Hide podium') : t('Show podium')}</button>
+          <button className="btn ghost-light danger-light" onClick={() => setDeleting(true)}><Icon name="trash" size={17} />{t('Delete game data')}</button>
         </div>}
-        {isHost && ranked.length > 3 && s.leaderboard && <details className="full-results"><summary>All {ranked.length} players</summary><ol>{ranked.map(p => <li key={p.id}><span>{p.rank}</span><strong>{p.name}</strong>{p.team !== undefined && <small>Team {teamNames[p.team]}</small>}<span>{p.score.toLocaleString()}</span></li>)}</ol></details>}
+        {isHost && ranked.length > 3 && s.leaderboard && <details className="full-results"><summary>{t('All players ({n})', { n: ranked.length })}</summary><ol>{ranked.map(p => <li key={p.id}><span>{p.rank}</span><strong>{p.name}</strong>{p.team !== undefined && <small>{teamName(p.team)}</small>}<span>{num(p.score)}</span></li>)}</ol></details>}
       </div>;
     }
     return null;
@@ -325,93 +331,93 @@ export function Game({ pin, role }: { pin: string; role: Role }) {
 
   function playerView(s: Snapshot) {
     const q = s.question; const me = s.me;
-    if (!me?.approved) return <div className="player-message"><div className="spinner" /><h1>Almost there!</h1><p>The host is checking nicknames. Sit tight, <strong>{me?.name}</strong>.</p></div>;
-    if (s.phase === 'lobby') return <div className="player-message"><h1>You’re in!</h1><p>See your nickname on screen?</p><span className="nick-pill">{me.name}</span>{teamMode && <p className="muted-light">Teams are drawn when the game starts.</p>}</div>;
+    if (!me?.approved) return <div className="player-message"><div className="spinner" /><h1>{t('Almost there!')}</h1><p>{t('The host is checking nicknames. Sit tight, {name}.', { name: me?.name || '' })}</p></div>;
+    if (s.phase === 'lobby') return <div className="player-message"><h1>{t('You’re in!')}</h1><p>{t('See your nickname on screen?')}</p><span className="nick-pill">{me.name}</span>{teamMode && <p className="muted-light">{t('Teams are drawn when the game starts.')}</p>}</div>;
     const showText = s.options.phoneText || q?.type === 'text' || q?.type === 'order';
     if (s.phase === 'question' && q && ready) return <div className="player-message get-ready-phone">
-      <span className="type-chip">Question {s.index + 1} of {s.total}{q.points === 'double' ? ' · Double points!' : ''}</span>
-      <h1>Get ready!</h1>
-      {showText ? <p className="ready-text">{q.text}</p> : <p>Look at the big screen</p>}
+      <span className="type-chip">{t('Question {n} of {total}', { n: s.index + 1, total: s.total })}{q.points === 'double' ? ` · ${t('Double points!')}` : ''}</span>
+      <h1>{t('Get ready!')}</h1>
+      {showText ? <p className="ready-text">{q.text}</p> : <p>{t('Look at the big screen')}</p>}
       <div className="ready-bar"><span style={{ width: `${Math.max(0, Math.min(100, opensIn / READY_MS * 100))}%` }} /></div>
     </div>;
     if (s.phase === 'question' && q) {
       if (accepted) return <div className="player-message">
         {q.type === 'text' ? <span className="nick-pill">“{me.text}”</span> : q.type === 'order' ? <Icon name="grip" size={56} /> : <div className="locked-shapes">{(me.selected || []).map(i => <span key={i} className={`mini-tile ans-${i}`}><Shape index={i} size={30} /></span>)}</div>}
-        <h1>{q.type === 'poll' ? 'Vote counted!' : 'Answer locked in!'}</h1><p>Waiting for the others…</p><div className="spinner" />
+        <h1>{q.type === 'poll' ? t('Vote counted!') : t('Answer locked in!')}</h1><p>{t('Waiting for the others…')}</p><div className="spinner" />
       </div>;
-      const head = <div className="pq-head"><span className="type-chip">{typeLabel[q.type]}{q.points === 'double' ? ' · 2×' : ''}</span><span className={`pq-timer ${seconds <= 5 ? 'urgent' : ''}`} role="timer" aria-label={`${seconds} seconds remaining`}>{s.paused ? <Icon name="pause" size={18} /> : seconds}</span></div>;
-      const retry = pendingRef.current && <button className="btn white full big submit-answer" disabled={!canAnswer} onClick={() => void submit()}>{answerBusy ? 'Sending…' : 'Retry the same answer'}</button>;
+      const head = <div className="pq-head"><span className="type-chip">{t(typeLabel[q.type])}{q.points === 'double' ? ' · 2×' : ''}</span><span className={`pq-timer ${seconds <= 5 ? 'urgent' : ''}`} role="timer" aria-label={t('{n} seconds remaining', { n: seconds })}>{s.paused ? <Icon name="pause" size={18} /> : seconds}</span></div>;
+      const retry = pendingRef.current && <button className="btn white full big submit-answer" disabled={!canAnswer} onClick={() => void submit()}>{answerBusy ? t('Sending…') : t('Retry the same answer')}</button>;
       if (q.type === 'text') return <form className="player-question text-question" onSubmit={e => { e.preventDefault(); void submit(); }}>
         {head}<h1 className="pq-text">{q.text}</h1>
-        <label className="sr-only" htmlFor="typed-answer">Your answer</label>
-        <input id="typed-answer" className="typed-input" autoFocus autoComplete="off" autoCapitalize="off" spellCheck={false} maxLength={80} placeholder="Type your answer" value={typed} disabled={!canAnswer || !!pendingRef.current} onChange={e => setTyped(e.target.value)} />
-        {retry || <button className="btn white full big submit-answer" type="submit" disabled={!canAnswer || !typed.trim()}>{answerBusy ? 'Sending…' : 'Submit'}</button>}
+        <label className="sr-only" htmlFor="typed-answer">{t('Your answer')}</label>
+        <input id="typed-answer" className="typed-input" autoFocus autoComplete="off" autoCapitalize="off" spellCheck={false} maxLength={80} placeholder={t('Type your answer')} value={typed} disabled={!canAnswer || !!pendingRef.current} onChange={e => setTyped(e.target.value)} />
+        {retry || <button className="btn white full big submit-answer" type="submit" disabled={!canAnswer || !typed.trim()}>{answerBusy ? t('Sending…') : t('Submit')}</button>}
       </form>;
       if (q.type === 'order') return <div className="player-question">
         {head}<h1 className="pq-text">{q.text}</h1>
-        <p className="order-help">Tap the items in the right order — tap again to undo.</p>
+        <p className="order-help">{t('Tap the items in the right order — tap again to undo.')}</p>
         <div className="order-list">{q.options.map((option, i) => { const position = selected.indexOf(i); return <button key={i} className={`order-item ans-${i} ${position >= 0 ? 'placed' : ''}`} disabled={!canAnswer || !!pendingRef.current} onClick={() => choose(i)} aria-pressed={position >= 0}>
           <span className="order-badge">{position >= 0 ? position + 1 : <Shape index={i} size={18} />}</span><span className="pt-text">{option}</span></button>; })}</div>
-        {retry || <div className="order-actions"><button className="btn ghost-light" disabled={!selected.length || !canAnswer} onClick={() => setSelected([])}>Reset</button><button className="btn white big submit-answer" disabled={!canAnswer || selected.length !== q.options.length} onClick={() => void submit()}>{answerBusy ? 'Sending…' : selected.length === q.options.length ? 'Submit order' : `${q.options.length - selected.length} left`}</button></div>}
+        {retry || <div className="order-actions"><button className="btn ghost-light" disabled={!selected.length || !canAnswer} onClick={() => setSelected([])}>{t('Reset')}</button><button className="btn white big submit-answer" disabled={!canAnswer || selected.length !== q.options.length} onClick={() => void submit()}>{answerBusy ? t('Sending…') : selected.length === q.options.length ? t('Submit order') : t('{n} left', { n: q.options.length - selected.length })}</button></div>}
       </div>;
       return <div className="player-question">
         {head}
-        {showText ? <h1 className="pq-text">{q.text}</h1> : <p className="look-up">Look at the big screen</p>}
+        {showText ? <h1 className="pq-text">{q.text}</h1> : <p className="look-up">{t('Look at the big screen')}</p>}
         <div className={`player-grid count-${q.options.length} ${showText ? '' : 'shapes-only'}`}>{q.options.map((option, i) => {
           const chosen = selected.includes(i);
-          return <button key={i} className={`player-tile ans-${i} ${chosen ? 'chosen' : ''} ${q.type === 'multiple' && selected.length && !chosen ? 'dim' : ''}`} disabled={!canAnswer || !!pendingRef.current} onClick={() => choose(i)} aria-pressed={chosen} aria-label={showText ? `${shapeNames[i]}: ${option}` : shapeNames[i]}>
-            <Shape index={i} size={40} />{showText && <span className="pt-text">{option}</span>}{q.type === 'multiple' && <span className="pt-check">{chosen && <Icon name="check" size={20} />}</span>}<kbd className="hide-mobile">{i + 1}</kbd>
+          return <button key={i} className={`player-tile ans-${i} ${chosen ? 'chosen' : ''} ${q.type === 'multiple' && selected.length && !chosen ? 'dim' : ''}`} disabled={!canAnswer || !!pendingRef.current} onClick={() => choose(i)} aria-pressed={chosen} aria-label={showText ? `${t(shapeNames[i])}: ${optionText(q.type, option)}` : t(shapeNames[i])}>
+            <Shape index={i} size={40} />{showText && <span className="pt-text">{optionText(q.type, option)}</span>}{q.type === 'multiple' && <span className="pt-check">{chosen && <Icon name="check" size={20} />}</span>}<kbd className="hide-mobile">{i + 1}</kbd>
           </button>;
         })}</div>
-        {q.type === 'multiple' ? retry || <button className="btn white full big submit-answer" disabled={!canAnswer || !selected.length} onClick={() => void submit()}>{answerBusy ? 'Sending…' : selected.length ? `Submit ${selected.length} ${selected.length === 1 ? 'answer' : 'answers'}` : 'Select your answers'}</button> : retry}
+        {q.type === 'multiple' ? retry || <button className="btn white full big submit-answer" disabled={!canAnswer || !selected.length} onClick={() => void submit()}>{answerBusy ? t('Sending…') : selected.length ? t('Submit {count}', { count: plural(selected.length, 'answer') }) : t('Select your answers')}</button> : retry}
       </div>;
     }
     if (s.phase === 'reveal' && q) {
       const credit = me.credit || 0; const answered = me.selected !== undefined;
       if (q.type === 'poll') return <div className="result-screen poll">
-        <h1>{answered ? 'Thanks for voting!' : 'Poll closed'}</h1>
+        <h1>{answered ? t('Thanks for voting!') : t('Poll closed')}</h1>
         <span className="result-icon"><Icon name="people" size={56} /></span>
-        {answered && <p className="result-answer">You voted: <strong>{me.selected?.map(n => q.options[n]).join(', ')}</strong></p>}
+        {answered && <p className="result-answer">{t('You voted:')} <strong>{me.selected?.map(n => q.options[n]).join(', ')}</strong></p>}
         {me.gap && <p className="gap-line">{gapText(me.gap)}</p>}
-        {q.revealImage && <img className="result-image" src={q.revealImage} alt="Reveal" />}
+        {q.revealImage && <img className="result-image" src={q.revealImage} alt={t('Reveal image')} />}
         {q.explanation && <p className="result-explanation">{q.explanation}</p>}
       </div>;
       const kind = !answered ? 'timeout' : credit === 1 ? 'correct' : credit > 0 ? 'partial' : 'incorrect';
       const { right } = describe({ question: { ...q, correct: q.correct || [], explanation: q.explanation || '' }, selected: me.selected || [], text: me.text });
       return <div className={`result-screen ${kind}`}>
-        <h1>{{ correct: 'Correct', partial: q.type === 'order' ? `${Math.round(credit * q.options.length)} of ${q.options.length} in place` : 'Partly correct', incorrect: 'Incorrect', timeout: 'Time’s up' }[kind]}</h1>
+        <h1>{{ correct: t('Correct'), partial: q.type === 'order' ? t('{n} of {total} in place', { n: Math.round(credit * q.options.length), total: q.options.length }) : t('Partly correct'), incorrect: t('Incorrect'), timeout: t('Time’s up') }[kind]}</h1>
         <span className="result-icon"><Icon name={kind === 'correct' ? 'check' : kind === 'partial' ? 'spark' : kind === 'timeout' ? 'clock' : 'close'} size={56} /></span>
-        {answered ? <span className="points-pill">+ {(me.points || 0).toLocaleString()}</span> : <p>No answer this round.</p>}
-        {kind === 'correct' && (me.streak || 0) >= 2 && <span className="streak-pill">🔥 Answer streak {me.streak}</span>}
-        <p className="result-rank">{me.rank ? `You’re in ${ordinal(me.rank)} place` : ''}{kind === 'incorrect' && <><br />Shake it off — the next one’s yours!</>}</p>
+        {answered ? <span className="points-pill">+ {num(me.points || 0)}</span> : <p>{t('No answer this round.')}</p>}
+        {kind === 'correct' && (me.streak || 0) >= 2 && <span className="streak-pill">🔥 {t('Answer streak {n}', { n: me.streak || 0 })}</span>}
+        <p className="result-rank">{me.rank ? t('You’re in {place} place', { place: place(me.rank) }) : ''}{kind === 'incorrect' && <><br />{t('Shake it off — the next one’s yours!')}</>}</p>
         {me.gap && <p className="gap-line">{gapText(me.gap)}</p>}
-        {kind !== 'correct' && right && <p className="result-answer">{q.type === 'text' && me.text ? <>You typed “{me.text}”. </> : null}Correct: <strong>{right}</strong></p>}
-        {q.revealImage && <img className="result-image" src={q.revealImage} alt="Reveal" />}
+        {kind !== 'correct' && right && <p className="result-answer">{q.type === 'text' && me.text ? <>{t('You typed “{text}”.', { text: me.text })} </> : null}{t('Correct:')} <strong>{right}</strong></p>}
+        {q.revealImage && <img className="result-image" src={q.revealImage} alt={t('Reveal image')} />}
         {q.explanation && <p className="result-explanation">{q.explanation}</p>}
       </div>;
     }
     if (s.phase === 'standings') {
       const myTeam = me.team !== undefined ? s.teams?.find(t => t.id === me.team) : undefined;
       return <div className="player-message">
-        <span className="rank-badge">{me.rank ? ordinal(me.rank) : '–'}</span>
-        <h1>{me.rank === 1 ? 'You’re in the lead!' : me.rank ? `You’re in ${ordinal(me.rank)} place` : 'Nice work'}</h1>
+        <span className="rank-badge">{me.rank ? rankLabel(me.rank) : '–'}</span>
+        <h1>{me.rank === 1 ? t('You’re in the lead!') : me.rank ? t('You’re in {place} place', { place: place(me.rank) }) : t('Nice work')}</h1>
         {me.gap && <p className="gap-line">{gapText(me.gap)}</p>}
-        {(me.streak || 0) >= 2 && <span className="streak-pill">🔥 Answer streak {me.streak}</span>}
-        {myTeam && <p className={`team-line ans-${myTeam.id}`}>Team {myTeam.name} is {ordinal(myTeam.rank)} with {myTeam.score.toLocaleString()}</p>}
-        <p className="muted-light">Your host will start the next question soon.</p>
+        {(me.streak || 0) >= 2 && <span className="streak-pill">🔥 {t('Answer streak {n}', { n: me.streak || 0 })}</span>}
+        {myTeam && <p className={`team-line ans-${myTeam.id}`}>{t('{team} is in {place} place with {score}', { team: teamName(myTeam.id), place: place(myTeam.rank), score: num(myTeam.score) })}</p>}
+        <p className="muted-light">{t('Your host will start the next question soon.')}</p>
       </div>;
     }
     if (s.phase === 'finished') {
       const myTeam = me.team !== undefined ? s.teams?.find(t => t.id === me.team) : undefined;
       return <div className="player-final">
         {!reduced && me.rank > 0 && me.rank <= 3 && <Confetti />}
-        <span className={`rank-badge place-${Math.min(me.rank || 4, 4)}`}>{me.rank ? ordinal(me.rank) : '–'}</span>
-        <h1>{me.rank === 1 ? 'Winner winner!' : me.rank && me.rank <= 3 ? 'On the podium!' : 'What a game!'}</h1>
-        <p>{me.score.toLocaleString()} points · class accuracy {s.classScore}%</p>
+        <span className={`rank-badge place-${Math.min(me.rank || 4, 4)}`}>{me.rank ? rankLabel(me.rank) : '–'}</span>
+        <h1>{me.rank === 1 ? t('Winner winner!') : me.rank && me.rank <= 3 ? t('On the podium!') : t('What a game!')}</h1>
+        <p>{plural(me.score, 'point')} · {t('class accuracy')} {s.classScore}%</p>
         {me.gap && <p className="gap-line">{gapText(me.gap)}</p>}
-        {myTeam && <p className={`team-line ans-${myTeam.id}`}>Team {myTeam.name} finished {ordinal(myTeam.rank)}</p>}
-        {s.review && <section className="review"><h2>Your answers</h2>{s.review.map((item, i) => { const { yours, right } = describe(item); return <details key={item.question.id}><summary><span className={`review-mark ${item.question.type === 'poll' ? 'poll' : item.credit === 1 ? 'correct' : item.credit > 0 ? 'partial' : ''}`}><Icon name={item.question.type === 'poll' ? 'people' : item.credit === 1 ? 'check' : item.credit > 0 ? 'spark' : 'close'} size={15} /></span><strong>{i + 1}. {item.question.text}</strong><span>{item.points}</span></summary><div><p><strong>{item.question.type === 'poll' ? 'Your vote' : 'Your answer'}:</strong> {yours || 'No answer'}</p>{right && <p><strong>Correct:</strong> {right}</p>}{item.question.explanation && <p>{item.question.explanation}</p>}</div></details>; })}</section>}
-        <button className="btn white" onClick={() => navigate('/join')}>Play another game</button>
+        {myTeam && <p className={`team-line ans-${myTeam.id}`}>{t('{team} finished in {place} place', { team: teamName(myTeam.id), place: place(myTeam.rank) })}</p>}
+        {s.review && <section className="review"><h2>{t('Your answers')}</h2>{s.review.map((item, i) => { const { yours, right } = describe(item); return <details key={item.question.id}><summary><span className={`review-mark ${item.question.type === 'poll' ? 'poll' : item.credit === 1 ? 'correct' : item.credit > 0 ? 'partial' : ''}`}><Icon name={item.question.type === 'poll' ? 'people' : item.credit === 1 ? 'check' : item.credit > 0 ? 'spark' : 'close'} size={15} /></span><strong>{i + 1}. {item.question.text}</strong><span>{item.points}</span></summary><div><p><strong>{item.question.type === 'poll' ? t('Your vote:') : t('Your answer:')}</strong> {yours || t('No answer')}</p>{right && <p><strong>{t('Correct:')}</strong> {right}</p>}{item.question.explanation && <p>{item.question.explanation}</p>}</div></details>; })}</section>}
+        <button className="btn white" onClick={() => navigate('/join')}>{t('Play another game')}</button>
       </div>;
     }
     return null;
@@ -421,27 +427,27 @@ export function Game({ pin, role }: { pin: string; role: Role }) {
   return <div className={`game-shell role-${role} phase-${state?.phase || 'loading'}${ready ? ' is-ready' : ''}`}>
     <div className="bg-shapes" aria-hidden="true">{[0, 1, 2, 3, 0, 2].map((s, i) => <span key={i} className={`bgs bgs-${i}`}><Shape index={s} size={120} /></span>)}</div>
     <header className="game-topbar">
-      <div className="gt-left">{isPlayer ? <span className="gt-pin">PIN {pin}</span> : <a href="/home" onClick={e => { e.preventDefault(); navigate('/home'); }} aria-label="Tori home"><Brand light /></a>}</div>
-      <span className="gt-center">{state && state.phase !== 'lobby' && state.phase !== 'finished' ? `${state.index + 1} of ${state.total}` : isScreen ? state?.title : ''}</span>
+      <div className="gt-left">{isPlayer ? <span className="gt-pin">PIN {pin}</span> : <a href="/home" onClick={e => { e.preventDefault(); navigate('/home'); }} aria-label={t('Tori home')}><Brand light /></a>}</div>
+      <span className="gt-center">{state && state.phase !== 'lobby' && state.phase !== 'finished' ? t('{n} of {total}', { n: state.index + 1, total: state.total }) : isScreen ? state?.title : ''}</span>
       {toolbar}
     </header>
-    {fatal ? <main className="player-message"><Icon name="warning" size={44} /><h1>{kicked ? 'You were removed' : 'Let’s find your way back.'}</h1><p role="alert">{fatal}</p>{!kicked && <p className="muted-light">Game access belongs to the browser where you hosted or joined. Rooms also expire automatically.</p>}<div className="row-actions"><button className="btn white" onClick={() => navigate(isPlayer ? '/join' : '/home')}>Back to Tori</button>{isPlayer && !kicked && <button className="btn ghost-light" onClick={() => { try { localStorage.removeItem(`tori.player.${pin}`); } catch { /* unavailable storage */ } location.href = `/join?pin=${pin}`; }}>Join as a new player</button>}</div></main>
-      : !state ? <main className="player-message"><div className="spinner" /><h1>Connecting…</h1><p>Game {pin}. Keep this page open.</p></main>
+    {fatal ? <main className="player-message"><Icon name="warning" size={44} /><h1>{kicked ? t('You were removed') : t('Let’s find your way back.')}</h1><p role="alert">{t(fatal)}</p>{!kicked && <p className="muted-light">{t('Game access belongs to the browser where you hosted or joined. Rooms also expire automatically.')}</p>}<div className="row-actions"><button className="btn white" onClick={() => navigate(isPlayer ? '/join' : '/home')}>{t('Back to Tori')}</button>{isPlayer && !kicked && <button className="btn ghost-light" onClick={() => { try { localStorage.removeItem(`tori.player.${pin}`); } catch { /* unavailable storage */ } location.href = `/join?pin=${pin}`; }}>{t('Join as a new player')}</button>}</div></main>
+      : !state ? <main className="player-message"><div className="spinner" /><h1>{t('Connecting…')}</h1><p>{t('Game {pin}. Keep this page open.', { pin })}</p></main>
       : <main className="game-main">
-        {(!connected || state.paused) && <div className="status-banner" role="status"><Icon name={!connected ? 'warning' : 'pause'} size={17} />{!connected ? 'Connection lost. Reconnecting — accepted answers are saved.' : 'Paused. The timer is frozen for everyone.'}</div>}
+        {(!connected || state.paused) && <div className="status-banner" role="status"><Icon name={!connected ? 'warning' : 'pause'} size={17} />{!connected ? t('Connection lost. Reconnecting — accepted answers are saved.') : t('Paused. The timer is frozen for everyone.')}</div>}
         {isPlayer ? playerView(state) : screenView(state)}
-        {error && <p className="game-alert" role="status">{error}{pendingRef.current && isPlayer && <button className="toast-action" onClick={() => void submit()}>Retry</button>}</p>}
-        {kickPrompt && state.phase === 'lobby' && !state.locked && <p className="game-alert" role="status">{kickPrompt} was removed. Lock the lobby so they can’t rejoin under a new name?<button className="toast-action" onClick={() => action('lock', undefined, () => setKickPrompt(''))}>Lock</button></p>}
+        {error && <p className="game-alert" role="status">{t(error)}{pendingRef.current && isPlayer && <button className="toast-action" onClick={() => void submit()}>{t('Retry')}</button>}</p>}
+        {kickPrompt && state.phase === 'lobby' && !state.locked && <p className="game-alert" role="status">{t('{name} was removed. Lock the lobby so they can’t rejoin under a new name?', { name: kickPrompt })}<button className="toast-action" onClick={() => action('lock', undefined, () => setKickPrompt(''))}>{t('Lock')}</button></p>}
       </main>}
-    {musicBlocked && musicOn && <button className="sound-unlock" onClick={() => { void unlockAudio(); setMusicBlocked(false); }} aria-label="Start sound"><span><Icon name="sound" size={44} /><strong>Click to start the sound</strong><small>Your browser needs one click before it plays music.</small></span></button>}
+    {musicBlocked && musicOn && <button className="sound-unlock" onClick={() => { void unlockAudio(); setMusicBlocked(false); }} aria-label={t('Click to start the sound')}><span><Icon name="sound" size={44} /><strong>{t('Click to start the sound')}</strong><small>{t('Your browser needs one click before it plays music.')}</small></span></button>}
     {isPlayer && state?.me && !fatal && <footer className="player-bar">
-      <span className="pb-name"><strong>{state.me.name}</strong>{state.me.gap ? <small>{gapText(state.me.gap)}</small> : state.me.team !== undefined && <small className={`ans-${state.me.team}`}>Team {teamNames[state.me.team]}</small>}</span>
-      {state.me.team !== undefined && <span className={`team-dot big ans-${state.me.team}`} title={`Team ${teamNames[state.me.team]}`} />}
-      <span className="score-chip">{state.me.score.toLocaleString()}</span>
+      <span className="pb-name"><strong>{state.me.name}</strong>{state.me.gap ? <small>{gapText(state.me.gap)}</small> : state.me.team !== undefined && <small className={`ans-${state.me.team}`}>{teamName(state.me.team)}</small>}</span>
+      {state.me.team !== undefined && <span className={`team-dot big ans-${state.me.team}`} title={teamName(state.me.team)} />}
+      <span className="score-chip">{num(state.me.score)}</span>
     </footer>}
-    {bigQr && qr && <Modal title={`Scan to join · PIN ${pin}`} onClose={() => setBigQr(false)}><img className="qr-large" src={qr} alt={`QR code to join game ${pin}`} /><p className="center-text">{joinUrl}</p></Modal>}
-    {deleting && <Modal title="End and delete this game?" onClose={() => setDeleting(false)}><p>This ends the game for everyone and permanently deletes player names, answers, and scores from the server. Your quiz stays in your library.</p><div className="modal-actions"><button className="btn outline" onClick={() => setDeleting(false)}>Keep playing</button><button className="btn red" disabled={controlsDisabled} onClick={() => { action('delete'); setDeleting(false); }}>Delete game</button></div></Modal>}
-    {showRules && <Modal title="How scoring works" onClose={() => setShowRules(false)}><p>{rules}</p><p>Typed answers ignore capitals, accents and punctuation. Puzzles score each item in the right place. Polls give no points. Double-points questions are worth twice as much.</p><p>One final answer per question. Answers are accepted only before the server deadline; refreshes preserve accepted answers. A pause freezes the timer for everyone.</p>{isScreen && <p><strong>Host shortcuts:</strong> Space or Enter continues, F toggles fullscreen.</p>}</Modal>}
+    {bigQr && qr && <Modal title={t('Scan to join · PIN {pin}', { pin })} onClose={() => setBigQr(false)}><img className="qr-large" src={qr} alt={t('QR code to join game {pin}', { pin })} /><p className="center-text">{joinUrl}</p></Modal>}
+    {deleting && <Modal title={t('End and delete this game?')} onClose={() => setDeleting(false)}><p>{t('This ends the game for everyone and permanently deletes player names, answers, and scores from the server. Your quiz stays in your library.')}</p><div className="modal-actions"><button className="btn outline" onClick={() => setDeleting(false)}>{t('Keep playing')}</button><button className="btn red" disabled={controlsDisabled} onClick={() => { action('delete'); setDeleting(false); }}>{t('Delete game')}</button></div></Modal>}
+    {showRules && <Modal title={t('How scoring works')} onClose={() => setShowRules(false)}><p>{t(rules)}</p><p>{t('Typed answers ignore capitals, accents and punctuation. Puzzles score each item in the right place. Polls give no points. Double-points questions are worth twice as much.')}</p><p>{t('One final answer per question. Answers are accepted only before the server deadline; refreshes preserve accepted answers. A pause freezes the timer for everyone.')}</p>{isScreen && <p><strong>{t('Host shortcuts:')}</strong> {t('Space or Enter continues, F toggles fullscreen.')}</p>}</Modal>}
     {replay && <HostModal quiz={replay} onClose={() => setReplay(null)} />}
   </div>;
 }

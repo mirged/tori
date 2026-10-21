@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { questionSchema, questionTypes, type Question, type Quiz } from '../../../packages/shared/src/protocol';
 import { samples } from '../../../packages/shared/src/samples';
+import { t } from './i18n';
 
 export function uid() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -116,9 +117,9 @@ export function quizFromCsv(text: string, title: string): Quiz {
   const answerCols = header.map((h, i) => /^(answer|option)/.test(h) ? i : -1).filter(i => i >= 0).slice(0, 6);
   if (qCol < 0 || !answerCols.length) throw new Error('Missing "Question" or "Answer 1" columns. Download the template to see the layout.');
   const questions = rows.slice(1).slice(0, 50).map((row, n): Question => {
-    const where = `Row ${n + 2}`;
+    const where = t('Row {n}', { n: n + 2 });
     const kind = typeAliases[(row[typeCol] || '').trim().toLowerCase()];
-    if (!kind) throw new Error(`${where}: unknown type "${row[typeCol]}". Use quiz, true/false, multi, poll, type answer, or order.`);
+    if (!kind) throw new Error(`${where}: ${t('unknown type “{type}”. Use quiz, true/false, multi, poll, type answer, or order.', { type: row[typeCol] })}`);
     let options = answerCols.map(i => (row[i] || '').trim()).filter(Boolean);
     if (kind === 'boolean') options = ['True', 'False'];
     const marked = (row[correctCol] || '').split(/[,;\s]+/).filter(Boolean).map(v => Number(v) - 1);
