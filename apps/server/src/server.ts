@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer as createHttpServer } from 'node:http';
 import { resolve } from 'node:path';
+import { networkInterfaces } from 'node:os';
 import { Server } from 'socket.io';
 import { Games, GameError } from './game.js';
 import { Store } from './store.js';
@@ -54,7 +55,8 @@ export async function createTori(options: ServerOptions = {}) {
     try {
       if (!allow(`create:${req.ip}`, 15)) return res.status(429).json({ error: 'Room creation limit reached. Try again in a minute.' });
       const input = createSchema.parse(req.body);
-      res.status(201).json(games.create(input.quiz, input.mode, input.approval, input.leaderboard));
+      const { quiz, mode, approval, leaderboard, ...options } = input;
+      res.status(201).json(games.create(quiz, mode, approval, leaderboard, options));
     } catch (error) { next(error); }
   });
   app.post('/api/join', (req, res, next) => {
@@ -72,6 +74,23 @@ export async function createTori(options: ServerOptions = {}) {
       const csv = games.csv({ pin: String(req.params.pin), role: 'host', token: req.headers.authorization?.replace(/^Bearer /, '') });
       res.set('Content-Disposition', `attachment; filename="tori-results.csv"`).type('text/csv').send(csv);
     } catch (error) { next(error); }
+  });
+  app.get('/api/rooms/:pin/media/:question/:kind', (req, res, next) => {
+    try {
+      const kind = req.params.kind === 'reveal' ? 'reveal' : 'image';
+      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/.exec(games.media(String(req.params.pin), String(req.params.question), kind));
+      if (!match) return res.status(404).json({ error: 'Image not available.' });
+      // Each room's images never change, so phones download them once.
+      res.set('Cache-Control', 'private, max-age=86400, immutable').type(match[1]).send(Buffer.from(match[2], 'base64'));
+    } catch (error) { if (error instanceof GameError) res.status(404).json({ error: error.message }); else next(error); }
+  });
+  app.get('/api/info', (req, res) => {
+    // Lets a host who opened Tori on localhost share an address phones can reach.
+    const port = (req.headers.host || '').split(':')[1] || '';
+    const lan = Object.values(networkInterfaces()).flat()
+      .filter(net => net && net.family === 'IPv4' && !net.internal && !/^(172\.(1[7-9]|2\d|3[01])|169\.254)\./.test(net.address))
+      .map(net => `http://${net!.address}${port ? ':' + port : ''}`);
+    res.json({ publicUrl: process.env.PUBLIC_URL?.replace(/\/$/, '') || null, lan });
   });
   app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found.' }));
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

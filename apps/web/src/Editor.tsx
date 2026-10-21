@@ -1,11 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
-import { questionSchema, quizSchema, type Question, type Quiz } from '../../../packages/shared/src/protocol';
+import { questionSchema, questionTypes, quizSchema, type Question, type Quiz } from '../../../packages/shared/src/protocol';
 import { Brand, Cover, Icon, Shape } from './icons';
-import { download, errorText, uid } from './lib';
+import { download, errorText, prepareImage, uid } from './lib';
 import { Modal, navigate } from './App';
 
-const typeNames: Record<Question['type'], string> = { single: 'Quiz', boolean: 'True or false', multiple: 'Multi-select' };
-const blank = (type: Question['type'] = 'single'): Question => ({ id: uid(), type, text: '', options: type === 'boolean' ? ['True', 'False'] : ['', '', '', ''], correct: [0], seconds: 20, explanation: '' });
+const typeNames: Record<Question['type'], string> = { single: 'Quiz', boolean: 'True or false', multiple: 'Multi-select', poll: 'Poll', text: 'Type answer', order: 'Puzzle' };
+const typeHints: Record<Question['type'], string> = {
+  single: 'One correct answer.', boolean: 'Is it true or false?', multiple: 'Mark every correct answer.',
+  poll: 'No right answer — everyone votes and sees the results. No points.',
+  text: 'Players type their answer. Capitals, accents and punctuation are ignored. Add other accepted spellings.',
+  order: 'Write the items in the correct order. Players see them shuffled and put them back in order.',
+};
+const usesCorrect = (type: Question['type']) => type === 'single' || type === 'boolean' || type === 'multiple';
+const blank = (type: Question['type'] = 'single'): Question => ({ id: uid(), type, text: '', options: type === 'boolean' ? ['True', 'False'] : type === 'text' ? [''] : ['', '', '', ''], correct: usesCorrect(type) ? [0] : [], seconds: type === 'text' || type === 'order' ? 30 : 20, explanation: '' });
+function convert(q: Question, type: Question['type']): Question {
+  if (type === 'boolean') return { ...q, type, options: ['True', 'False'], correct: [q.correct[0] === 1 ? 1 : 0] };
+  const choices = q.type === 'boolean' ? ['', '', '', ''] : q.type === 'text' ? [...q.options, '', '', ''].slice(0, Math.max(4, q.options.length)) : q.options;
+  if (type === 'text') return { ...q, type, options: [usesCorrect(q.type) ? q.options[q.correct[0]] || '' : q.options[0] || ''].map(o => q.type === 'boolean' ? '' : o), correct: [] };
+  if (type === 'poll' || type === 'order') return { ...q, type, options: choices, correct: [] };
+  const first = usesCorrect(q.type) ? q.correct : [0];
+  return { ...q, type, options: choices, correct: type === 'multiple' ? (first.length ? first : [0]) : first.slice(0, 1).concat(first.length ? [] : [0]) };
+}
 const issuesFor = (q: Question) => { const result = questionSchema.safeParse(q); return result.success ? [] : [...new Set(result.error.issues.map(i => i.message))]; };
 
 export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; onChange: (quiz: Quiz) => void; onHost: () => void; storageError: string }) {
@@ -41,8 +56,8 @@ export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; o
   async function image(file?: File, field: 'image' | 'revealImage' = 'image') {
     if (!file) return;
     try {
-      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) || file.size > 1_000_000) throw new Error('Choose a PNG, JPEG, WebP, or GIF image under 1 MB.');
-      const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('The image could not be read.')); reader.readAsDataURL(file); });
+      setError('');
+      const data = await prepareImage(file);
       const result = questionSchema.shape.image.safeParse(data);
       if (!result.success) throw new Error('That image format could not be verified. Try another PNG, JPEG, WebP, or GIF.');
       updateQuestion({ [field]: data });
@@ -59,9 +74,7 @@ export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; o
     }
     onHost();
   }
-  function setType(type: Question['type']) {
-    updateQuestion({ type, ...(type === 'boolean' ? { options: ['True', 'False'], correct: [q.correct[0] && q.correct[0] < 2 ? q.correct[0] : 0] } : { options: q.type === 'boolean' ? ['', '', '', ''] : q.options, correct: type === 'multiple' ? q.correct : q.correct.slice(0, 1) }) });
-  }
+  const setType = (type: Question['type']) => { if (type !== q.type) updateQuestion(convert(q, type)); };
   const toggleCorrect = (i: number) => updateQuestion({ correct: q.type === 'multiple' ? q.correct.includes(i) ? q.correct.filter(n => n !== i) : [...q.correct, i] : [i] });
   const issues = q ? issuesFor(q) : [];
   return <div className="editor-shell">
@@ -94,7 +107,7 @@ export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; o
         })}</ol>
         <div className="add-wrap">
           <button className="btn blue full" onClick={() => setAddMenu(!addMenu)} aria-expanded={addMenu} disabled={quiz.questions.length >= 50}><Icon name="plus" size={17} />Add question</button>
-          {addMenu && <div className="add-menu" role="menu">{(['single', 'boolean', 'multiple'] as const).map(type => <button role="menuitem" key={type} onClick={() => add(type)}><span className={`type-icon type-${type}`}>{type === 'boolean' ? <><Shape index={0} size={10} /><Shape index={1} size={10} /></> : <><Shape index={0} size={9} /><Shape index={1} size={9} /><Shape index={2} size={9} /><Shape index={3} size={9} /></>}</span>{typeNames[type]}</button>)}</div>}
+          {addMenu && <div className="add-menu" role="menu">{questionTypes.map(type => <button role="menuitem" key={type} onClick={() => add(type)}><span className={`type-icon type-${type}`}>{type === 'boolean' ? <><Shape index={0} size={10} /><Shape index={1} size={10} /></> : type === 'text' ? <Icon name="edit" size={14} /> : type === 'order' ? <Icon name="grip" size={14} /> : type === 'poll' ? <Icon name="people" size={14} /> : <><Shape index={0} size={9} /><Shape index={1} size={9} /><Shape index={2} size={9} /><Shape index={3} size={9} /></>}</span>{typeNames[type]}</button>)}</div>}
           <small className="rail-count">{quiz.questions.length}/50 questions</small>
         </div>
       </aside>
@@ -108,17 +121,25 @@ export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; o
               : <button className="media-empty" onClick={() => imageRef.current?.click()}><span className="media-plus"><Icon name="plus" size={30} /></span><strong>Insert an image</strong><small>Drop a file here · PNG, JPEG, WebP, GIF up to 1 MB</small></button>}
             <input type="file" ref={imageRef} hidden accept="image/png,image/jpeg,image/webp,image/gif" onChange={e => image(e.target.files?.[0])} />
           </div>
-          <div className="canvas-answers">{q.options.map((option, i) => {
+          <p className="type-hint"><Icon name="help" size={15} />{typeHints[q.type]}</p>
+          {q.type === 'text' || q.type === 'order' ? <div className="list-answers">{q.options.map((option, i) => <div className={`list-answer ${q.type === 'order' ? `ans-${i}` : 'accepted'}`} key={`${q.id}-${i}`}>
+              <span className="list-tag">{q.type === 'order' ? i + 1 : <Icon name="check" size={16} />}</span>
+              <label className="sr-only" htmlFor={`answer-${i}`}>{q.type === 'order' ? `Item ${i + 1}` : `Accepted answer ${i + 1}`}</label>
+              <input id={`answer-${i}`} maxLength={160} value={option} placeholder={q.type === 'order' ? `Item ${i + 1}` : i ? 'Another accepted spelling' : 'The correct answer'} onChange={e => updateQuestion({ options: q.options.map((o, n) => n === i ? e.target.value : o) })} />
+              {q.type === 'order' && <><button className="answer-remove" aria-label={`Move item ${i + 1} up`} disabled={!i} onClick={() => { const options = [...q.options]; [options[i - 1], options[i]] = [options[i], options[i - 1]]; updateQuestion({ options }); }}><Icon name="up" size={15} /></button><button className="answer-remove" aria-label={`Move item ${i + 1} down`} disabled={i === q.options.length - 1} onClick={() => { const options = [...q.options]; [options[i + 1], options[i]] = [options[i], options[i + 1]]; updateQuestion({ options }); }}><Icon name="down" size={15} /></button></>}
+              {q.options.length > (q.type === 'order' ? 2 : 1) && <button className="answer-remove" aria-label={`Remove ${i + 1}`} onClick={() => updateQuestion({ options: q.options.filter((_, n) => n !== i) })}><Icon name="close" size={14} /></button>}
+            </div>)}</div>
+          : <div className="canvas-answers">{q.options.map((option, i) => {
             const correct = q.correct.includes(i);
             return <div className={`edit-answer ans-${i} ${option ? 'filled' : ''} ${correct ? 'correct' : ''}`} key={`${q.id}-${i}`}>
               <span className="edit-shape"><Shape index={i} size={22} /></span>
               <label className="sr-only" htmlFor={`answer-${i}`}>Answer {i + 1}</label>
               <input id={`answer-${i}`} maxLength={160} value={option} readOnly={q.type === 'boolean'} placeholder={`Add answer ${i + 1}${i >= 2 ? ' (optional)' : ''}`} onChange={e => updateQuestion({ options: q.options.map((o, n) => n === i ? e.target.value : o) })} />
               {q.options.length > 2 && q.type !== 'boolean' && <button className="answer-remove" aria-label={`Remove answer ${i + 1}`} onClick={() => updateQuestion({ options: q.options.filter((_, n) => n !== i), correct: q.correct.filter(n => n !== i).map(n => n > i ? n - 1 : n) })}><Icon name="close" size={14} /></button>}
-              <button className={`correct-toggle ${q.type === 'multiple' ? 'square' : ''}`} role={q.type === 'multiple' ? 'checkbox' : 'radio'} aria-checked={correct} aria-label={`Answer ${i + 1} is correct`} onClick={() => toggleCorrect(i)}>{correct && <Icon name="check" size={18} />}</button>
+              {usesCorrect(q.type) && <button className={`correct-toggle ${q.type === 'multiple' ? 'square' : ''}`} role={q.type === 'multiple' ? 'checkbox' : 'radio'} aria-checked={correct} aria-label={`Answer ${i + 1} is correct`} onClick={() => toggleCorrect(i)}>{correct && <Icon name="check" size={18} />}</button>}
             </div>;
-          })}</div>
-          {q.type !== 'boolean' && q.options.length < 6 && <button className="btn white small add-answer" onClick={() => updateQuestion({ options: [...q.options, ''] })}><Icon name="plus" size={15} />Add more answers</button>}
+          })}</div>}
+          {q.type !== 'boolean' && q.options.length < 6 && <button className="btn white small add-answer" onClick={() => updateQuestion({ options: [...q.options, ''] })}><Icon name="plus" size={15} />{q.type === 'text' ? 'Add another accepted answer' : q.type === 'order' ? 'Add another item' : 'Add more answers'}</button>}
           <label className="canvas-explanation"><span><Icon name="spark" size={16} />Explanation <small>shown after the reveal · optional</small></span><textarea rows={2} maxLength={1000} placeholder="Why is this the answer? Share a fun fact." value={q.explanation} onChange={e => updateQuestion({ explanation: e.target.value })} />
             {q.revealImage ? <div className="reveal-image-edit"><img src={q.revealImage} alt="Reveal image" /><button className="btn white small" onClick={e => { e.preventDefault(); updateQuestion({ revealImage: undefined }); }}><Icon name="trash" size={15} />Remove</button></div>
               : <button className="btn ghost small reveal-add" onClick={e => { e.preventDefault(); revealRef.current?.click(); }}><Icon name="image" size={16} />Add a reveal image — a meme or GIF shown with the answer</button>}
@@ -128,10 +149,13 @@ export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; o
 
       {q && <aside className="inspector" aria-label="Question settings">
         <div className="inspector-group"><h3><Icon name="help" size={16} />Question type</h3>
-          <div className="type-picker" role="radiogroup" aria-label="Question type">{(['single', 'boolean', 'multiple'] as const).map(type => <button key={type} role="radio" aria-checked={q.type === type} className={q.type === type ? 'active' : ''} onClick={() => setType(type)}>{typeNames[type]}</button>)}</div>
+          <div className="type-picker" role="radiogroup" aria-label="Question type">{questionTypes.map(type => <button key={type} role="radio" aria-checked={q.type === type} className={q.type === type ? 'active' : ''} onClick={() => setType(type)}>{typeNames[type]}</button>)}</div>
         </div>
         <div className="inspector-group"><h3><Icon name="clock" size={16} />Time limit</h3>
           <div className="time-picker" role="radiogroup" aria-label="Time limit">{[...new Set([5, 10, 20, 30, 60, 90, 120, 240, q.seconds])].sort((a, b) => a - b).map(s => <button key={s} role="radio" aria-checked={q.seconds === s} className={q.seconds === s ? 'active' : ''} onClick={() => updateQuestion({ seconds: s })}>{s < 60 ? `${s}s` : `${s / 60}m`}</button>)}</div>
+        </div>
+        <div className="inspector-group"><h3><Icon name="trophy" size={16} />Points</h3>
+          <div className="time-picker" role="radiogroup" aria-label="Points">{(['standard', 'double', 'none'] as const).map(points => <button key={points} role="radio" aria-checked={(q.points || 'standard') === points} className={(q.points || 'standard') === points ? 'active' : ''} disabled={q.type === 'poll'} onClick={() => updateQuestion({ points: points === 'standard' ? undefined : points })}>{points === 'standard' ? 'Standard' : points === 'double' ? 'Double' : 'None'}</button>)}</div>
         </div>
         {issues.length > 0 && <div className="inspector-group issues"><h3><Icon name="warning" size={16} />Needs attention</h3><ul>{issues.map(m => <li key={m}>{m}</li>)}</ul></div>}
         <div className="inspector-actions">
@@ -156,7 +180,8 @@ export function Editor({ quiz, onChange, onHost, storageError }: { quiz: Quiz; o
     {preview && q && <Modal title={`Preview · Question ${index + 1}`} onClose={() => setPreview(false)} wide>
       <div className="question-preview">
         <div className="preview-stage"><h2>{q.text || 'Your question will appear here.'}</h2>{q.image && <img className="preview-image" src={q.image} alt="Question illustration" />}<span className="preview-timer">{q.seconds}</span></div>
-        <div className="preview-answers">{q.options.map((o, i) => <div key={i} className={`play-tile ans-${i} ${showCorrect ? q.correct.includes(i) ? 'right' : 'wrong' : ''}`}><Shape index={i} size={26} /><span>{o || `Answer ${i + 1}`}</span>{showCorrect && q.correct.includes(i) && <Icon name="check" size={24} />}</div>)}</div>
+        {q.type === 'text' ? <div className="preview-text">{showCorrect ? `Accepted: ${q.options.filter(Boolean).join(' · ') || '—'}` : 'Players type their answer here'}</div>
+          : <div className="preview-answers">{q.options.map((o, i) => <div key={i} className={`play-tile ans-${i} ${showCorrect && usesCorrect(q.type) ? q.correct.includes(i) ? 'right' : 'wrong' : ''}`}>{q.type === 'order' && showCorrect ? <strong>{i + 1}</strong> : <Shape index={i} size={26} />}<span>{o || `Answer ${i + 1}`}</span>{showCorrect && q.correct.includes(i) && <Icon name="check" size={24} />}</div>)}</div>}
         {showCorrect && <p className="explanation-box">{q.explanation || 'Add an explanation to share the story behind this answer.'}</p>}{showCorrect && q.revealImage && <img className="preview-image" src={q.revealImage} alt="Reveal image" />}
         <button className="btn blue full" onClick={() => setShowCorrect(!showCorrect)}>{showCorrect ? 'Hide correct answer' : 'Reveal correct answer'}</button>
       </div>

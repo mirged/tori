@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { quizSchema, type Mode, type Quiz } from '../../../packages/shared/src/protocol';
 import { isOffensiveName } from '../../../packages/shared/src/names';
 import { Brand, Cover, Icon, Shape } from './icons';
-import { api, download, draftSchema, errorText, loadQuizzes, rules, saveCredential, uid } from './lib';
+import { api, csvTemplate, download, draftSchema, errorText, quizFromCsv, rules, saveCredential, uid } from './lib';
+import { loadLibrary, saveLegacy, saveLibrary } from './storage';
 import { Editor } from './Editor';
 import { Game } from './Game';
 
@@ -43,9 +44,15 @@ export function App() {
     if (location.pathname === '/') history.replaceState(null, '', '/join' + location.search);
     return location.pathname;
   });
-  const [initial] = useState(() => { try { return { quizzes: loadQuizzes(), error: '' }; } catch { return { quizzes: [] as Quiz[], error: 'Browser drafts could not be read. Export the saved data before making new changes.' }; } });
-  const [quizzes, setQuizzes] = useState(initial.quizzes);
-  const [storageError, setStorageError] = useState(initial.error);
+  const [loaded, setLoaded] = useState(false);
+  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
+  const [storageError, setStorageError] = useState('');
+  const storage = useRef({ persistent: true, readOnly: false, saved: [] as Quiz[], queue: Promise.resolve() });
+  useEffect(() => {
+    loadLibrary().then(result => { storage.current.persistent = result.persistent; storage.current.saved = result.quizzes; setQuizzes(result.quizzes); })
+      .catch(() => { storage.current.readOnly = true; setStorageError('Browser drafts could not be read. Export the saved data before making new changes.'); })
+      .finally(() => setLoaded(true));
+  }, []);
   const [notice, setNotice] = useState('');
   const [hosting, setHosting] = useState<Quiz | null>(null);
   const [help, setHelp] = useState(false);
@@ -58,9 +65,13 @@ export function App() {
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 5000); return () => clearTimeout(timer); }, [notice]);
   function save(next: Quiz[]) {
     setQuizzes(next);
-    if (initial.error) { setStorageError('These changes are in memory only. Recover or clear unreadable browser data before saving.'); return; }
-    try { localStorage.setItem('tori.quizzes.v1', JSON.stringify(next)); setStorageError(''); }
-    catch { setStorageError('Browser storage is full or unavailable. Changes are in memory only; export a JSON backup before leaving.'); }
+    const state = storage.current;
+    if (state.readOnly) { setStorageError('These changes are in memory only. Recover or clear unreadable browser data before saving.'); return; }
+    // Saves run one after another so each only writes what changed since the last success.
+    state.queue = state.queue.then(async () => {
+      if (state.persistent) await saveLibrary(next, state.saved); else saveLegacy(next);
+      state.saved = next; setStorageError('');
+    }).catch(() => setStorageError('Browser storage is full or unavailable. Changes are in memory only; export a JSON backup before leaving.'));
   }
   function create() {
     const quiz: Quiz = { version: 1, id: uid(), title: '', description: '', category: 'General knowledge', cover: 'blue', questions: [{ id: uid(), type: 'single', text: '', options: ['', '', '', ''], correct: [0], seconds: 20, explanation: '' }] };
@@ -75,6 +86,12 @@ export function App() {
     if (!file) return;
     try {
       if (file.size > 8_000_000) throw new Error('Keep imported files under 8 MB.');
+      if (/\.(csv|tsv|txt)$/i.test(file.name) || file.type === 'text/csv') {
+        const quiz = quizFromCsv(await file.text(), file.name.replace(/\.[^.]+$/, '') || 'Imported quiz');
+        save([quiz, ...quizzes]); setNotice(`${quiz.questions.length} questions imported from the spreadsheet.`); navigate(`/edit/${quiz.id}`);
+        if (importRef.current) importRef.current.value = '';
+        return;
+      }
       const result = draftSchema.safeParse(JSON.parse(await file.text()));
       if (!result.success) throw new Error('This is not a valid Tori v1 quiz. ' + result.error.issues[0].message);
       const quiz = { ...result.data, id: uid() }; save([quiz, ...quizzes]); setNotice('Quiz imported. Make it your own!'); navigate(`/edit/${quiz.id}`);
@@ -85,6 +102,7 @@ export function App() {
   if (match) return <Game key={path} pin={match[2]} role={match[1] === 'play' ? 'player' : match[1] as 'host' | 'projector'} />;
   if (path === '/join') return <JoinScreen />;
   const editId = /^\/edit\/([^/]+)$/.exec(path)?.[1];
+  if (!loaded) return <main className="crash"><Brand light /><div className="spinner" /></main>;
   if (editId) {
     const quiz = quizzes.find(q => q.id === editId);
     if (quiz) return <><Editor quiz={quiz} onChange={next => save(quizzes.map(q => q.id === next.id ? next : q))} onHost={() => host(quiz)} storageError={storageError} />{notice && <div role="status" className="toast">{notice}</div>}{hosting && <HostModal quiz={hosting} onClose={() => setHosting(null)} />}</>;
@@ -122,14 +140,14 @@ export function App() {
         <div className="hero-card hero-create">
           <span className="hero-badge">FREE · OPEN SOURCE</span>
           <h2>Make a quiz in minutes</h2>
-          <p>Questions, images, timers and explanations. Host it live with a PIN and QR code.</p>
+          <p>Questions, images, timers and explanations. Or write questions in a spreadsheet — <button className="link-button" onClick={() => download(csvTemplate, 'tori-template.csv', 'text/csv')}>download the CSV template</button>.</p>
           <div className="hero-actions">
             <button className="btn green" onClick={create}><Icon name="plus" size={18} />Create quiz</button>
-            <button className="btn white" onClick={() => importRef.current?.click()}><Icon name="upload" size={17} />Import</button>
+            <button className="btn white" onClick={() => importRef.current?.click()}><Icon name="upload" size={17} />Import JSON or CSV</button>
           </div>
         </div>
       </section>
-      <input type="file" accept=".json,application/json" hidden ref={importRef} onChange={e => importQuiz(e.target.files?.[0])} />
+      <input type="file" accept=".json,application/json,.csv,text/csv" hidden ref={importRef} onChange={e => importQuiz(e.target.files?.[0])} />
       {section === 'library' ? <section className="library" aria-labelledby="library-heading">
         <div className="section-heading"><h2 id="library-heading">My quizzes</h2><span className="count-pill">{quizzes.length}</span></div>
         <div className="library-toolbar">
@@ -174,9 +192,12 @@ function JoinScreen() {
     if (step !== 'name') return;
     try { if (localStorage.getItem(`tori.player.${pin}`)) navigate(`/play/${pin}`); } catch { /* storage unavailable */ }
   }, [step, pin]);
+  const kicked = (value: string) => { try { return localStorage.getItem(`tori.kicked.${value}`) === '1'; } catch { return false; } };
+  useEffect(() => { if (step === 'name' && kicked(pin)) { setStep('pin'); setError('You were removed from this game by the host.'); } }, [step, pin]);
   function enterPin(event: FormEvent) {
     event.preventDefault(); setError('');
     if (!/^\d{6}$/.test(pin)) { setError('Enter the six-digit PIN from your host.'); return; }
+    if (kicked(pin)) { setError('You were removed from this game by the host.'); return; }
     setStep('name');
   }
   async function join(event: FormEvent) {
@@ -249,30 +270,41 @@ function QuizCard({ quiz, onHost, onEdit, onExport, onDuplicate, onDelete }: { q
   </article>;
 }
 
+interface HostPrefs { mode: Mode; approval: boolean; leaderboard: boolean; teams: boolean; shuffle: boolean; autoReveal: boolean; phoneText: boolean; getReady: boolean }
+const hostDefaults: HostPrefs = { mode: 'speed', approval: false, leaderboard: true, teams: false, shuffle: true, autoReveal: true, phoneText: true, getReady: true };
 export function HostModal({ quiz, onClose }: { quiz: Quiz; onClose: () => void }) {
-  const [mode, setMode] = useState<Mode>('speed'); const [approval, setApproval] = useState(false); const [leaderboard, setLeaderboard] = useState(true);
+  const [prefs, setPrefs] = useState<HostPrefs>(() => { try { return { ...hostDefaults, ...JSON.parse(localStorage.getItem('tori.hostPrefs') || '{}') }; } catch { return hostDefaults; } });
   const [busy, setBusy] = useState(false); const [error, setError] = useState('');
+  const set = (patch: Partial<HostPrefs>) => setPrefs(prev => { const next = { ...prev, ...patch }; try { localStorage.setItem('tori.hostPrefs', JSON.stringify(next)); } catch { /* optional */ } return next; });
   async function start() {
     setBusy(true); setError('');
     try {
       const parsed = quizSchema.parse(quiz);
-      const room = await api<{ pin: string; token: string }>('/api/rooms', { quiz: parsed, mode, approval, leaderboard });
+      const room = await api<{ pin: string; token: string }>('/api/rooms', { quiz: parsed, ...prefs });
       saveCredential(room.pin, 'host', room.token);
-      try { localStorage.setItem('tori.recent', JSON.stringify([{ pin: room.pin, title: quiz.title, date: new Date().toISOString() }, ...recentGames()].slice(0, 20))); localStorage.setItem(`tori.replay.${room.pin}`, JSON.stringify(quiz)); } catch { /* Host credential is already durable; optional history may exceed quota. */ }
+      try { localStorage.setItem('tori.recent', JSON.stringify([{ pin: room.pin, title: quiz.title, date: new Date().toISOString() }, ...recentGames()].slice(0, 20))); } catch { /* Host credential is already durable; optional history may exceed quota. */ }
       onClose(); navigate(`/host/${room.pin}`);
     } catch (error) { setError(errorText(error)); } finally { setBusy(false); }
   }
+  const toggles: [keyof HostPrefs, string, string][] = [
+    ['leaderboard', 'Leaderboard & podium', 'Scoreboard between questions and a podium at the end.'],
+    ['teams', 'Team mode', 'Players are split into 2–4 colour teams when you start.'],
+    ['getReady', 'Get ready screen', 'Show each question for 4 seconds before answers open.'],
+    ['autoReveal', 'Reveal when everyone answers', 'Skip the wait once all players are in.'],
+    ['shuffle', 'Shuffle answer order', 'So the right answer isn’t always the same colour.'],
+    ['phoneText', 'Show question on phones', 'Turn off to show only shapes — eyes on the big screen.'],
+    ['approval', 'Approve nicknames', 'Check each name before the player enters.'],
+  ];
   return <Modal title="Host a live game" onClose={onClose} wide>
     <div className="host-quiz"><Cover kind={quiz.cover} small /><div><strong>{quiz.title}</strong><p>{quiz.questions.length} questions · ~{minutes(quiz)} min</p></div></div>
     <h3 className="field-heading">Game mode</h3>
     <div className="mode-grid">
-      <button className={`mode-option mode-speed ${mode === 'speed' ? 'selected' : ''}`} onClick={() => setMode('speed')} aria-pressed={mode === 'speed'}><span className="mode-icon"><Icon name="spark" size={28} /></span><strong>Classic</strong><span>Faster correct answers earn more — 500 to 1,000 points.</span>{mode === 'speed' && <span className="mode-check"><Icon name="check" size={16} /></span>}</button>
-      <button className={`mode-option mode-accuracy ${mode === 'accuracy' ? 'selected' : ''}`} onClick={() => setMode('accuracy')} aria-pressed={mode === 'accuracy'}><span className="mode-icon"><Icon name="leaf" size={28} /></span><strong>Accuracy</strong><span>No rush. Every correct answer is worth 1,000 points.</span>{mode === 'accuracy' && <span className="mode-check"><Icon name="check" size={16} /></span>}</button>
+      <button className={`mode-option mode-speed ${prefs.mode === 'speed' ? 'selected' : ''}`} onClick={() => set({ mode: 'speed' })} aria-pressed={prefs.mode === 'speed'}><span className="mode-icon"><Icon name="spark" size={28} /></span><strong>Classic</strong><span>Faster correct answers earn more — 500 to 1,000 points.</span>{prefs.mode === 'speed' && <span className="mode-check"><Icon name="check" size={16} /></span>}</button>
+      <button className={`mode-option mode-accuracy ${prefs.mode === 'accuracy' ? 'selected' : ''}`} onClick={() => set({ mode: 'accuracy' })} aria-pressed={prefs.mode === 'accuracy'}><span className="mode-icon"><Icon name="leaf" size={28} /></span><strong>Accuracy</strong><span>No rush. Every correct answer is worth 1,000 points.</span>{prefs.mode === 'accuracy' && <span className="mode-check"><Icon name="check" size={16} /></span>}</button>
     </div>
     <h3 className="field-heading">Options</h3>
-    <label className="toggle-row"><span><strong>Show the leaderboard</strong><small>Scoreboard between questions and a podium at the end.</small></span><input type="checkbox" role="switch" className="switch" checked={leaderboard} onChange={e => setLeaderboard(e.target.checked)} /></label>
-    <label className="toggle-row"><span><strong>Approve nicknames</strong><small>Check each name before the player enters.</small></span><input type="checkbox" role="switch" className="switch" checked={approval} onChange={e => setApproval(e.target.checked)} /></label>
-    {mode === 'speed' && <p className="hint-text"><Icon name="help" size={15} />Network latency can affect speed scores.</p>}
+    <div className="toggle-grid">{toggles.map(([key, title, hint]) => <label key={key} className="toggle-row"><span><strong>{title}</strong><small>{hint}</small></span><input type="checkbox" role="switch" className="switch" checked={!!prefs[key]} onChange={e => set({ [key]: e.target.checked })} /></label>)}</div>
+    {prefs.mode === 'speed' && <p className="hint-text"><Icon name="help" size={15} />Network latency can affect speed scores.</p>}
     <details className="rules"><summary>Read the scoring rules</summary><p>{rules}</p></details>
     {error && <p className="alert" role="alert">{error}</p>}
     <button className="btn green full big" onClick={start} disabled={busy}>{busy ? 'Opening the lobby…' : 'Start'}<Icon name="arrow" /></button>

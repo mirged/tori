@@ -32,9 +32,12 @@ test('reveal images stay hidden until the answer is revealed', t => {
   const host: Credentials = { ...games.create(quiz, 'accuracy', false, true), role: 'host' };
   const player: Credentials = { ...games.join(host.pin, 'Owl'), role: 'player' };
   const act = (type: 'start' | 'close') => games.action(host, { type, requestId: randomUUID(), seq: games.get(host.pin).seq });
+  assert.throws(() => games.media(host.pin, quiz.questions[0].id, 'reveal'), /not available/);
   act('start');
   assert.equal(games.snapshot(player).question?.revealImage, undefined);
   assert.equal(games.snapshot(host).question?.revealImage, undefined);
+  assert.throws(() => games.media(host.pin, quiz.questions[0].id, 'reveal'), /not available/);
   act('close');
-  assert.equal(games.snapshot(player).question?.revealImage, quiz.questions[0].revealImage);
+  assert.match(games.snapshot(player).question?.revealImage || '', /^\/api\/rooms\/\d{6}\/media\/octopus\/reveal\?v=/);
+  assert.equal(games.media(host.pin, quiz.questions[0].id, 'reveal'), quiz.questions[0].revealImage);
 });
