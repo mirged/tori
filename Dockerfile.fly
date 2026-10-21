@@ -1,0 +1,26 @@
+# Fly.io image. Same build as ./Dockerfile, but starts as root just long enough
+# to give the mounted volume (which Fly creates owned by root) to the node user.
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+COPY package*.json ./
+COPY apps/web/package.json apps/web/package.json
+COPY apps/server/package.json apps/server/package.json
+COPY packages/shared/package.json packages/shared/package.json
+RUN npm ci --no-audit --no-fund
+COPY . .
+RUN npm run build
+
+FROM node:24-bookworm-slim
+ENV NODE_ENV=production PORT=3000 DATABASE_PATH=/data/tori.sqlite
+WORKDIR /app
+COPY --from=build --chown=node:node /app/package*.json ./
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/apps ./apps
+COPY --from=build --chown=node:node /app/packages ./packages
+COPY --from=build --chown=node:node /app/audio/*.mp3 ./audio/
+COPY --from=build --chown=node:node /app/LICENSE ./LICENSE
+COPY --chmod=755 scripts/fly-entrypoint.sh /usr/local/bin/fly-entrypoint
+EXPOSE 3000
+ENTRYPOINT ["fly-entrypoint"]
+CMD ["node", "--import", "tsx", "apps/server/src/index.ts", "--production"]

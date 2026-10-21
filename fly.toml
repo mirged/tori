@@ -1,0 +1,41 @@
+# Fly.io config. Change `app` to a unique name, then see README → Fly.io.
+app = "tori-quiz"
+primary_region = "waw"          # Warsaw, closest to Lithuania (alternatives: arn, fra)
+
+[build]
+  dockerfile = "Dockerfile.fly"
+
+[env]
+  PORT = "3000"
+  DATABASE_PATH = "/data/tori.sqlite"
+  TRUST_PROXY_HOPS = "1"        # Fly's proxy is one hop; keeps rate limits per player
+
+[[mounts]]
+  source = "tori_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Stay awake during class: no cold starts, and live connections aren't cut.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # Each phone holds one live connection. Fly's default limit (~25) would turn
+  # away part of a class, so allow plenty.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 400
+    hard_limit = 500
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

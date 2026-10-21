@@ -69,6 +69,27 @@ restart/redeploy and the service sleeps after 15 idle minutes (open it a few
 minutes before class to wake it). Keep it at one instance. Pushing to the repo
 redeploys automatically; don't redeploy during a lesson.
 
+## Option D — Fly.io (always on, ~$3–4/month)
+
+Install [flyctl](https://fly.io/docs/flyctl/install/) and sign in (`fly auth login`;
+Fly needs a payment card). Then, from this folder:
+
+```sh
+# 1. Pick a unique name and put it in fly.toml (app = "...")
+fly apps create my-class-tori
+# 2. One small volume for the game database, in the same region as fly.toml
+fly volumes create tori_data --region waw --size 1 --app my-class-tori
+# 3. Build and deploy (uses Dockerfile.fly)
+fly deploy
+# 4. Make sure exactly one machine runs (rooms live in one process)
+fly scale count 1 --app my-class-tori
+```
+
+Open `https://my-class-tori.fly.dev/home` to host; students open the bare address.
+`fly.toml` keeps the machine always on (no cold starts) and raises the
+connection limit so a whole class can stay connected. Logs: `fly logs`.
+Redeploy with `fly deploy` — not during a lesson.
+
 ## Before your class — 2-minute checklist
 
 1. Host a test game and join from your own phone on the class network.
