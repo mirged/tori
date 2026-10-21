@@ -54,6 +54,21 @@ sh scripts/deploy.sh
 Students open the site and land straight on the PIN screen; you go to `/home`
 (or tap **Host or create a quiz** on the join screen).
 
+## Option C — Render (no server to manage)
+
+1. Push this repo to GitHub (or GitLab).
+2. In [Render](https://dashboard.render.com): **New → Blueprint**, pick the repo.
+   Render reads `render.yaml` and creates a Node web service (Frankfurt) with a
+   1 GB disk for the game database. Click **Apply**.
+3. When the deploy is green, open `https://<your-service>.onrender.com/home`.
+   Students use the bare address — it opens the PIN screen.
+
+Notes: the disk needs a paid instance (Starter). On the free plan, delete the
+`disk:` block and set `plan: free` — it works, but games are lost on every
+restart/redeploy and the service sleeps after 15 idle minutes (open it a few
+minutes before class to wake it). Keep it at one instance. Pushing to the repo
+redeploys automatically; don't redeploy during a lesson.
+
 ## Before your class — 2-minute checklist
 
 1. Host a test game and join from your own phone on the class network.

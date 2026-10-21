@@ -1,0 +1,24 @@
+# Render Blueprint: New → Blueprint → pick this repo. Render reads this file.
+# One web service with a small persistent disk for the SQLite game database.
+services:
+  - type: web
+    name: tori
+    runtime: node
+    plan: starter            # Disks need a paid plan. "free" works too but forgets games on restart.
+    region: frankfurt        # Closest Render region to Lithuania.
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: DATABASE_PATH
+        value: /var/data/tori.sqlite
+      # Render sits in front as one proxy hop; this keeps rate limits per player, not per proxy.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+    disk:
+      name: tori-data
+      mountPath: /var/data
+      sizeGB: 1
