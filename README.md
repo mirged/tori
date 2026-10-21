@@ -45,8 +45,9 @@ sh scripts/deploy.sh
 
 - With `DOMAIN` set, Caddy gets a free HTTPS certificate automatically and Tori is
   live at `https://quiz.example.com`. Open ports 80 and 443.
-- Without a domain, Tori runs on `http://SERVER-IP:3000`. Open port 3000, and set
-  `PUBLIC_URL=http://SERVER-IP:3000` in `.env` so the QR code shows that address.
+- Without a domain, Tori runs on the standard web port: `http://SERVER-IP`. Open
+  port 80, and set `PUBLIC_URL=http://SERVER-IP` in `.env` so the QR code shows
+  that address. (Set `PORT=8080` in `.env` to use another port.)
 - Update later with `git pull && sh scripts/deploy.sh`. Game data lives in the
   `tori-data` Docker volume and survives rebuilds (`docker compose down -v` deletes it).
 - Logs: `docker compose logs -f tori`. Health: `/api/health`.
@@ -142,7 +143,7 @@ Set `E2E_SHOTS=some/folder` to save screenshots of every screen.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PORT` | `3000` | HTTP and Socket.IO port |
+| `PORT` | `3000` | HTTP and Socket.IO port (Docker publishes it on host port 80) |
 | `HOST` | `0.0.0.0` | Listen address |
 | `PUBLIC_URL` | unset | Join address shown in the lobby/QR (auto from `DOMAIN` in Docker) |
 | `DATABASE_PATH` | `data/tori.sqlite` | Persistent SQLite file |

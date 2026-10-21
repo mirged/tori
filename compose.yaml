@@ -1,4 +1,4 @@
-# Plain HTTP on port 3000 (classroom Wi-Fi or a server behind your own proxy):
+# Plain HTTP on port 80 (open http://SERVER-IP in a browser):
 #   docker compose up -d --build
 # Public server with automatic HTTPS (needs a domain pointing at the server):
 #   echo "DOMAIN=quiz.example.com" > .env && docker compose --profile https up -d --build
@@ -6,7 +6,9 @@ services:
   tori:
     build: .
     ports:
-      - "${PORT:-3000}:3000"
+      # Host port 80 by default. scripts/deploy.sh binds it to 127.0.0.1:3000
+      # instead when DOMAIN is set, so Caddy can own ports 80 and 443.
+      - "${PORT:-80}:3000"
     environment:
       PORT: "3000"
       DATABASE_PATH: /app/data/tori.sqlite
