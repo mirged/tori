@@ -78,7 +78,7 @@ Fly needs a payment card). Then, from this folder:
 # 1. Pick a unique name and put it in fly.toml (app = "...")
 fly apps create my-class-tori
 # 2. One small volume for the game database, in the same region as fly.toml
-fly volumes create tori_data --region waw --size 1 --app my-class-tori
+fly volumes create tori_data --region fra --size 1 --app my-class-tori
 # 3. Build and deploy (uses Dockerfile.fly)
 fly deploy
 # 4. Make sure exactly one machine runs (rooms live in one process)

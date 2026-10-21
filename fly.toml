@@ -1,6 +1,6 @@
 # Fly.io config. Change `app` to a unique name, then see README → Fly.io.
 app = "tori-quiz"
-primary_region = "waw"          # Warsaw, closest to Lithuania (alternatives: arn, fra)
+primary_region = "fra"          # Frankfurt. List options with: fly platform regions
 
 [build]
   dockerfile = "Dockerfile.fly"
